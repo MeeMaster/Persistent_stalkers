@@ -153,7 +153,8 @@ function RegisterScriptCallback(n, f) CB[n] = CB[n] or {}; table.insert(CB[n], f
 function UnregisterScriptCallback() end
 function SendScriptCallback(n, ...) for _, f in ipairs(CB[n] or {}) do if type(f) == "function" then f(...) end end end
 local function fire(n, ...) for _, f in ipairs(CB[n] or {}) do if type(f) == "function" then f(...) end end end
-local MCM = { ["persistent_stalkers/mode"] = "save" }
+-- the old dropdown's "off" is left in the options: it must be ignored now
+local MCM = { ["persistent_stalkers/mode"] = "off" }
 ui_mcm = { get = function(k) return MCM[k] end, init_opt_base = function() end }
 axr_main = { config = { r_value = function() return nil end } }
 main_menu = { get_main_menu = function() return {} end }
@@ -222,6 +223,11 @@ for _, e in ipairs(t.gr) do
 	check(e.id ~= "menu_key" and e.id ~= "open_menu" and e.id ~= "pause_menu" and e.id ~= "active", "no menu option " .. tostring(e.id))
 	if e.id == "menu_key" then break end
 end
+local last = t.gr[#t.gr]
+check(last.id == "constant_saves" and last.type == "check" and last.def == false, "constant saves: a checkbox, last, off by default")
+for _, e in ipairs(t.gr) do
+	check(e.id ~= "mode", "no mode dropdown: " .. tostring(e.id))
+end
 local mm = MM.main_menu()
 check(mm.pst_panel ~= nil, "the panel is attached")
 check(mm.shniaga.x == 10 or mm.shniaga.x ~= nil, "the options were moved")
@@ -285,6 +291,7 @@ local function start_game(m_data)
 	PRESENT = true
 	db.actor = { alive = function() return true end }
 	C.on_game_start()
+	M.on_game_start()
 	fire("load_state", m_data or {})
 	fire("actor_on_first_update")
 	for i = 1, 40 do NOW = NOW + 100; fire("actor_on_update") end
@@ -361,9 +368,9 @@ check(s6.persistent_stalkers.profile == "none" and FILES["app/persistent_stalker
 mm = MM.main_menu()
 check(text_of("menu:what"):find("without a profile"), "pause menu with None: " .. text_of("menu:what"))
 
-print("-- 7. profile mode: the profile is applied on every load")
+print("-- 7. constant saves: the profile is applied on every load")
 end_game()
-MCM["persistent_stalkers/mode"] = "profile"
+MCM["persistent_stalkers/constant_saves"] = true
 mm = MM.main_menu()
 click(mm, "pst_row_2")
 check(text_of("menu:what"):find("exactly as you left it"), "what in profile mode")
@@ -374,30 +381,64 @@ ACTOR.money = 300
 for i = 1, 60 do NOW = NOW + 100; fire("actor_on_update") end
 check(P.character().money == 300, "written within 5 s")
 
-print("-- 8. the console switch")
-C.switch_to("alt")
-check(P.current_profile() == "alt" and #APPLIED == 3 and APPLIED[3].money == 900 and P.selected_profile() == "alt", "switch_to applies alt and selects it")
+print("-- 8. F8 switches in a game, in debug mode only")
+local function f8() fire("on_key_press", "DIK_F8"); fire("on_key_release", "DIK_F8") end
+DEV_DEBUG = false
+f8()
+check(not M.is_open(), "F8 without -dbg does nothing")
+DEV_DEBUG = true
+f8()
+check(M.is_open(), "F8 with -dbg opens the switch window")
+local sw = M.GUI
+local sp = sw.panel
+check(sp and sp.how == "switch" and #sp.entries == 3, "every row in the window")
+check(sp.row_texts[2].text:find("in use"), "default marked in use: " .. sp.row_texts[2].text)
+check(sp.btn_new.shown == false and sp.btn_remove.shown == false, "no New or Remove in a game")
+click(sw, "pst_row_3")
+check(sp.chosen == "alt" and P.current_profile() == "default", "a click only shows alt")
+check(text_of("menu:what"):find("default is written first"), "what: " .. text_of("menu:what"))
+click(sw, "pst_btn_switch")
+check(not M.is_open(), "Switch closes the window")
+NOW = NOW + 100; fire("actor_on_update")
+check(P.current_profile() == "alt" and #APPLIED == 3 and APPLIED[3].money == 900 and P.selected_profile() == "alt", "then alt is applied and selected")
+check(P.character_of("default").money == 300, "default was written first")
+f8()
+check(M.is_open(), "F8 opens it again")
+M.GUI:OnKeyboard("DIK_F8", "WINDOW_KEY_PRESSED")
+fire("on_key_release", "DIK_F8")
+check(not M.is_open(), "F8 closes it, and its release does not reopen it")
+f8()
+M.GUI:OnKeyboard("DIK_ESCAPE", "WINDOW_KEY_PRESSED")
+check(not M.is_open(), "Esc closes it")
+f8()
+click(M.GUI, "pst_btn_close")
+check(not M.is_open(), "Close closes it")
+NOW = NOW + 100; fire("actor_on_update")
+check(P.current_profile() == "alt" and #APPLIED == 3, "closing switches nothing")
 C.switch_to("nope")
-check(P.current_profile() == "alt", "an unknown name is refused")
+check(P.current_profile() == "alt", "the console: an unknown name is refused")
+DEV_DEBUG = false
 
-print("-- 9. mode off")
-end_game()
-MCM["persistent_stalkers/mode"] = "off"
-mm = MM.main_menu()
-check(text_of("menu:what"):find("Off in MCM"), "the main menu says the mode is off")
-start_game(save)
-check(C.get_phase() == "off" and #APPLIED == 3, "nothing happens")
+print("-- 9. constant saves unticked mid-game")
+MCM["persistent_stalkers/constant_saves"] = false
+fire("on_option_change")
+check(logged("constant saves off"), "a tip says so")
+local rev = P.revision()
+ACTOR.money = 777
+for i = 1, 60 do NOW = NOW + 100; fire("actor_on_update") end
+check(P.revision() == rev, "nothing written between saves")
+fire("save_state", {})
+check(P.character().money == 777, "written at the save")
 
 print("-- 10. client in save mode")
 end_game()
-MCM["persistent_stalkers/mode"] = "save"
 HOST = false
 ACTOR.money = 40
 start_game()
 check(C.get_phase() == "waiting", "waits for the key")
 CB["net_pst_world"][1](master_core_text.encode({ key = "k-1" }))
 for i = 1, 60 do NOW = NOW + 100; fire("actor_on_update") end
-check(C.get_phase() == "live" and #APPLIED == 4 and APPLIED[4].money == 900, "no snapshot: alt's file applied")
+check(C.get_phase() == "live" and #APPLIED == 4 and APPLIED[4].money == 777, "no snapshot: alt's file applied (as step 9 saved it)")
 ACTOR.money = 41
 CB["net_pst_saved"][1](master_core_text.encode({ key = "k-2" }))
 check(P.snapshot("k-2") and P.snapshot("k-2").money == 41, "a host save stores a snapshot")

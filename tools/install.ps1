@@ -1,14 +1,16 @@
-# Installs (or refreshes) Persistent Stalkers v2 (PS_v2) into Mod Organizer as a real folder of
-# hardlinks to the files in this repo, creates the target profile from the
-# G.A.M.M.A one if it does not exist yet, and enables the mod in it.
+# Installs (or refreshes) Persistent Stalkers into Mod Organizer as a real folder of
+# hardlinks to the files in this repo (the branch checked out), creates the
+# target profile from the G.A.M.M.A one if it does not exist yet, and enables
+# the mod in it.
 #
-#   powershell -ExecutionPolicy Bypass -File "D:\Code\Stalker mods\PS_v2\tools\install.ps1"
+#   powershell -ExecutionPolicy Bypass -File "D:\Code\Stalker mods\Persistent_stalkers\tools\install.ps1"
 #   ... -GammaDir E:\GAMMA -ProfileName GEM -SourceProfile G.A.M.M.A
-#   ... -Replaces ''    leaves the first version (Persistent_stalkers) enabled
-#
-# The first version (Persistent_stalkers) is disabled in the profile: both have
-# the same script names. Its folder in mods is left as it is.
 #   ... -WhatIf    lists what it would do
+#
+# After switching branches, run it again: a file only on the other branch
+# stays in the install (files only in the install are left alone), so remove
+# D:\GAMMA\mods\Persistent_stalkers first when going back to master (menu_load
+# adds ui_main_menu.script, which would replace the game's main menu).
 #
 # Run it after edits: editors often replace a file instead of writing into
 # it, which breaks its hardlink, and the game then keeps reading the old copy
@@ -20,8 +22,7 @@ param(
 	[string]$GammaDir = 'D:\GAMMA',
 	[string]$ProfileName = 'GEM',
 	[string]$SourceProfile = 'G.A.M.M.A',
-	[string]$ModName = 'PS_v2',
-	[string]$Replaces = 'Persistent_stalkers',
+	[string]$ModName = 'Persistent_stalkers',
 	[switch]$WhatIf
 )
 
@@ -113,15 +114,6 @@ if ($index -ge 0 -and $lines[$index] -eq "+$ModName") {
 	while ($at -lt $lines.Count -and $lines[$at].StartsWith('#')) { $at++ }
 	$lines.Insert($at, "+$ModName")
 	$actions += "added +$ModName at line $($at + 1)"
-}
-# The first version has the same script names: only one of the two is enabled.
-if ($Replaces -and $Replaces -ne $ModName) {
-	for ($i = 0; $i -lt $lines.Count; $i++) {
-		if ($lines[$i] -eq "+$Replaces") {
-			$lines[$i] = "-$Replaces"
-			$actions += "disabled $Replaces (line $($i + 1))"
-		}
-	}
 }
 if ($actions.Count -eq 0) {
 	return
