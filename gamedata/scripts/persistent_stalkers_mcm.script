@@ -1,5 +1,5 @@
--- Persistent Stalkers in MCM (Mod Configuration Menu): the save mode, what
--- the profile carries, the profile menu, and character profiles.
+-- Persistent Stalkers in MCM (Mod Configuration Menu): the save mode and
+-- what the profile carries.
 --
 --   Save mode (dropdown): off, "profile" (the character lives apart from the
 --     save), "save" (the character follows the save). See
@@ -7,79 +7,18 @@
 --   Carried: money, rank and reputation, faction goodwill, faction, needs,
 --     skills and other mod state, recipes. Items always. Health, bleeding,
 --     body parts, radiation and psy health stay with the loaded save.
---   Profile menu: its key (F8), pausing solo play while it is open, and (in
---     a game) a button that opens it once MCM is closed. Which profile a game
---     plays is chosen there (persistent_stalkers_menu.script).
---   Profiles: the status line, New (empty: it takes the character you have
---     when you first choose it in the profile menu), Remove (never the active
---     one, never default; its files are kept as a backup). No profile list:
---     choosing happens only in the profile menu, which remembers the choice
---     for the next game (persistent_stalkers_profile.set_selected).
 --
--- MCM finds this file by its name (*mcm.script) and calls on_mcm_load. The
--- buttons act at once (MCM's "button": functor_ui gets the menu); the typed
--- names are read from the input boxes themselves (ui_hook_functor), so they
--- need no Apply. The profile part is Master Core's (master_core_profiles.page),
--- shared with Private Backrooms; without Master Core it is left out.
-
-local page -- master_core_profiles.page, made on the first on_mcm_load
-
-local function profile()
-	return rawget(_G, "persistent_stalkers_profile") or persistent_stalkers_profile
-end
-
-local function core()
-	return rawget(_G, "persistent_stalkers") or persistent_stalkers
-end
-
--- How a profile is shown: NONE as "None (regular saves)".
-local function label(v)
-	return v == profile().NONE and "None (regular saves)" or v
-end
-
--- Master Core's page includes the active profile list; it is left out here.
-local LEFT_OUT = { active = true, active_locked = true }
-
-local function profile_options()
-	-- Not rawget: MCM builds its pages at the main menu, before the engine
-	-- has loaded master_core_profiles, and only a plain global loads a
-	-- script on first use. rawget saw none and left the page empty.
-	if not master_core_profiles then
-		return {}
-	end
-	page = page or master_core_profiles.page({
-		id = "persistent_stalkers",
-		spec = function() return profile().profile_spec() end,
-		apply = function() return false end, -- no list, never called
-		label = label,
-	})
-	local out = {}
-	for _, e in ipairs(page.options()) do
-		if not LEFT_OUT[e.id] then
-			out[#out + 1] = e
-		end
-	end
-	return out
-end
+-- No profiles here: choosing, creating and removing them is the main menu's
+-- (ui_main_menu.script, persistent_stalkers_menu.script), before a game.
+--
+-- MCM finds this file by its name (*mcm.script) and calls on_mcm_load.
 
 local function check(id, def)
 	return { id = id, type = "check", val = 1, def = def }
 end
 
-local function in_game()
-	return level and level.present() and db.actor and true or false
-end
-
-local function on_open_menu(gui)
-	core().request_menu()
-end
-
-local function key_default()
-	return DIK_keys and DIK_keys.DIK_F8 or -1
-end
-
 function on_mcm_load()
-	local t = {
+	return {
 		id = "persistent_stalkers",
 		sh = true,
 		gr = {
@@ -97,17 +36,6 @@ function on_mcm_load()
 			check("carry_skill_tree", true),
 			check("carry_recipes", true),
 			check("death_strip", false),
-			{ id = "line_menu", type = "line" },
-			{ id = "title_menu", type = "title", text = "ui_mcm_persistent_stalkers_title_menu", align = "l", clr = { 255, 196, 18, 18 } },
-			{ id = "menu_key", type = "key_bind", val = 2, def = key_default() },
-			check("pause_menu", false),
-			{ id = "open_menu", type = "button", functor_ui = { on_open_menu }, precondition = { in_game } },
-			{ id = "line_profiles", type = "line" },
-			{ id = "title_profiles", type = "title", text = "ui_mcm_persistent_stalkers_title_profiles", align = "l", clr = { 255, 196, 18, 18 } },
 		},
 	}
-	for _, e in ipairs(profile_options()) do
-		t.gr[#t.gr + 1] = e
-	end
-	return t
 end

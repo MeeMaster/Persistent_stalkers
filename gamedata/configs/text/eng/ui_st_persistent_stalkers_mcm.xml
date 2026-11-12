@@ -10,7 +10,7 @@
 		<text>Save mode</text>
 	</string>
 	<string id="ui_mcm_persistent_stalkers_mode_desc">
-		<text>How your character relates to the save. Off: the mod does nothing. Otherwise, loading a save that was not last played with your profile opens the profile menu, where you choose who you play. Character follows the save: the profile is written each time you save, and loading a save played with it gives you the character from that save (die and reload, and you have what you had at that save). Character lives in the profile: the profile is written whenever your character changes, and loading a save gives you the profile's character, whatever the save holds; loading an older save rolls back the world, not you. Either way, health and bleeding stay with the save. Each player picks their own. Turned on during a game, it starts when you next load a save or join; turned off, it stops at once.</text>
+		<text>How your character relates to the save. Off: the mod does nothing. Otherwise every game you start, load or join is played with the profile chosen at the main menu, where profiles are also created and removed. Character follows the save: the profile is written each time you save, and loading a save played with it gives you the character from that save (die and reload, and you have what you had at that save); any other game gets the profile as it was at your last save. Character lives in the profile: the profile is written whenever your character changes, and loading a save gives you the profile's character, whatever the save holds; loading an older save rolls back the world, not you. Either way, health and bleeding stay with the save. Each player picks their own. Turned on during a game, it starts when you next load a save or join; turned off, it stops at once.</text>
 	</string>
 	<string id="ui_mcm_lst_pst_off">
 		<text>Off</text>
@@ -77,62 +77,5 @@
 	</string>
 	<string id="ui_mcm_persistent_stalkers_death_strip_desc">
 		<text>Only for "Character lives in the profile", and only when nothing else keeps you alive (DANTE, Azazel, Soulslike). Off: after a death and reload you have the gear you carried a moment before dying. Health and bleeding are the save's. On: the profile loses everything you carried except the binoculars, PDA and torch you have equipped.</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_title_profiles">
-		<text>Character profiles</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_status">
-		<text>Each profile is one character. Choose which one you play in the profile menu (its key, or the button above): it opens after a load when needed, and remembers your choice for the next game.\n </text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_new_name">
-		<text>New profile name</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_new_name_desc">
-		<text>Letters, digits, _ and - (up to 32). Then press Create.</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_create">
-		<text>Create the profile (empty)</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_create_desc">
-		<text>Makes a new, empty profile. The first time you choose it in the profile menu, it takes the character you have at that moment.</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_remove_target">
-		<text>Profile to remove</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_remove_target_desc">
-		<text>The active profile and default cannot be removed.</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_remove_confirm">
-		<text>Type its name to confirm</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_remove_confirm_desc">
-		<text>The profile is removed only if this matches its name exactly.</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_remove">
-		<text>Remove the profile</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_remove_desc">
-		<text>Takes the profile off the list. Its character is kept in a backup file next to it (persistent_stalkers_profile_NAME.removed-TIME.txt in the game's appdata folder).</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_title_menu">
-		<text>Profile menu</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_menu_key">
-		<text>Profile menu key</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_menu_key_desc">
-		<text>Opens the profile menu during play: every profile with its loadout, to switch to another one. Your current profile is saved first.</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_pause_menu">
-		<text>Pause the game while the profile menu is open (solo)</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_pause_menu_desc">
-		<text>Experimental. The menu shows after a load, when the world is already running. Off: the world goes on while you choose.</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_open_menu">
-		<text>Open the profile menu</text>
-	</string>
-	<string id="ui_mcm_persistent_stalkers_open_menu_desc">
-		<text>Opens it when you close this menu.</text>
 	</string>
 </string_table>

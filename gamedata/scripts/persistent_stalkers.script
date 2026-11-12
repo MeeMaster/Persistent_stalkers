@@ -1,12 +1,12 @@
 -- Persistent Stalkers: a character profile that travels between worlds
 -- (AGENTS.md). A profile holds one character (persistent_stalkers_profile,
--- persistent_stalkers_state). Which profile a game plays is chosen in the
--- profile menu (persistent_stalkers_menu), shown after a load when the save
--- was not last played with the selected profile, and opened with the menu key
--- to switch. MCM "Save mode" decides how the chosen profile relates to the
+-- persistent_stalkers_state). Which profile is played is chosen at the main
+-- menu (ui_main_menu, persistent_stalkers_menu), before a game: every game
+-- started, loaded or joined after that is played with it, and it cannot be
+-- changed in a game. MCM "Save mode" decides how the profile relates to the
 -- save:
 --
---   off      nothing is read or written, and no menu.
+--   off      nothing is read or written.
 --   profile  (A) the character lives apart from the save. The profile is
 --            written on every change (1 s after it, and every 5 s), and on
 --            every load or join of a world played with it the actor is made
@@ -18,15 +18,15 @@
 --            a save is made. Loading a save played with the profile takes the
 --            character the save holds: on the host and in solo the save
 --            itself, on a client the snapshot it stored under that save's
---            key. Choosing the profile for a world that has no copy of it (a
---            new game, a save from before, another profile's save) gives the
---            profile's file.
+--            key. A world that has no copy of the profile (a new game, a
+--            save from before, another profile's save) gets the profile's
+--            file.
 --
--- None (the menu's first row) plays the save's character and writes nothing.
--- Every save remembers what it was played with (the profile, or None): on
--- the host in the save (m_data.persistent_stalkers.profile), on a client in
--- persistent_stalkers_worlds.txt under the host's save key. A load whose
--- save matches the selected profile goes straight through; any other asks.
+-- A profile with no character yet takes the one of the first game played
+-- with it. None (the list's first row) plays each save's own character and
+-- writes nothing. Every host save remembers what it was played with (the
+-- profile, or None: m_data.persistent_stalkers.profile); that is how "save"
+-- mode knows a save is the profile's own.
 --
 -- The mode and the profile are this machine's: each player in a session
 -- picks their own. The host always gives every save a key (session id and a
@@ -36,15 +36,16 @@
 -- On arrival (each map's first update) nothing happens until the world has
 -- settled: 3 s on the host, and on a client until xrRazom's gear restore is
 -- done (XrrNet():JoinSettling()) plus 5 s (xrRazom sets satiety, radiation
--- and wounds again 1 and 3 s after its restore), and until the host's save
--- key is known (at most 20 s). A level change keeps the character as it is
--- (a marker file written on on_level_changing).
+-- and wounds again 1 and 3 s after its restore), and in "save" mode until
+-- the host's save key is known (at most 20 s). A level change keeps the
+-- character as it is (a marker file written on on_level_changing).
 --
 -- Console, with the game started with -dbg:
 --   run_string persistent_stalkers.status()   mode, profile, phase, stored and carried
 --   run_string persistent_stalkers.write()    write the profile now
 --   run_string persistent_stalkers.restore()  make the actor match the profile now
---   run_string persistent_stalkers_menu.open("switch")  the profile menu
+--   run_string persistent_stalkers.switch_to("name")  development only: play
+--                                             another profile without quitting
 
 local WRITE_EVERY = 5000 -- ms between profile checks in "profile" mode
 local DIRTY_DELAY = 1000 -- ms after a change before the profile is written
@@ -53,7 +54,6 @@ local CLIENT_SETTLE = 5000 -- ms after xrRazom's restore is done on a client
 local CLIENT_MAX_WAIT = 90000 -- ms a client waits for JoinSettling at most
 local WORLD_WAIT = 20000 -- ms a client waits for the save's key
 local HELLO_EVERY = 3000 -- ms between a client's key requests
-local REOPEN_AFTER = 1000 -- ms before an arrival menu closed by something else opens again
 local LEVEL_CHANGE_FOR = 180 -- s a level change marker counts
 local DEFAULT_MODE = "off"
 
@@ -68,12 +68,10 @@ local DEFAULTS = {
 	carry_skill_tree = true,
 	carry_recipes = true,
 	death_strip = false,
-	pause_menu = false,
 }
 
--- idle, waiting (arrival), choosing (the arrival's menu is open), applying,
--- live (a profile is in use and written), none (playing without a profile),
--- dead, off
+-- idle, waiting (arrival), applying, live (a profile is in use and written),
+-- none (playing without a profile), dead, off
 local phase = "idle"
 local arrival -- { t, settled_t, level_change, hello_t }
 local next_write = 0
@@ -81,9 +79,6 @@ local loaded -- the loaded save's m_data.persistent_stalkers (host)
 local session_info = {} -- { session, counter } of this world (host)
 local host_key -- the key of the save the world was loaded from
 local got_world = false -- a client has the host's key (or the host has none)
-local pending_pick -- { name, how }: a menu choice, run on the next update
-local menu_wanted = false -- MCM's "Open the profile menu": once MCM is closed
-local menu_gone_t -- when the arrival's menu was found closed without a choice
 
 local function log(fmt, ...)
 	printf("[PersistentStalkers] " .. fmt, ...)
@@ -102,10 +97,6 @@ end
 
 local function state()
 	return rawget(_G, "persistent_stalkers_state") or persistent_stalkers_state
-end
-
-local function menu()
-	return rawget(_G, "persistent_stalkers_menu") or persistent_stalkers_menu
 end
 
 function setting(key)
@@ -229,7 +220,7 @@ local function mark_dirty()
 end
 
 -- What a save made now was played with: the profile in use, None, or nil
--- while that is not decided yet (arrival, the menu, an apply). Only a live
+-- while the character is not the profile's yet (arrival, an apply). Only a live
 -- character is the profile's: a new game's first autosave is made on
 -- fake_start before the arrival has settled, and once named the profile, so
 -- "save" mode then followed that save's starting kit instead of applying the
@@ -279,7 +270,7 @@ local function take_marker()
 end
 
 -------------------------------------------------------------------------------
--- Arrival: wait, decide (or ask), apply
+-- Arrival: wait, then make the character the selected profile's
 
 local function go_live(why, no_write)
 	phase = "live"
@@ -330,16 +321,16 @@ local function target()
 	return stored, stored and string.format("no copy for save %s: the profile", tostring(host_key)) or "a new profile takes the character as it is"
 end
 
-local function apply_target(what)
+-- The arrival's character for the selected profile. Either way a tip names
+-- the profile: nothing else in the game says which one is played.
+local function apply_target()
 	local c, why = target()
 	if c then
-		apply_character(c, why, what)
+		apply_character(c, why)
 	else
 		log("%s", why)
 		go_live(why)
-		if what then
-			tip(what)
-		end
+		tip("playing as " .. profile().current_profile())
 	end
 end
 
@@ -352,17 +343,8 @@ function world_tag()
 	return host_key and profile().world_profile(host_key) or nil
 end
 
-local function ask()
-	phase = "choosing"
-	menu_gone_t = nil
-	local ok, res = pcall(function() return menu().open("arrival") end)
-	if not ok or res == false then
-		log("! the profile menu did not open: %s", tostring(res))
-		go_none("the menu did not open")
-		tip("the profile menu could not open: you keep this save's character and nothing is written. Try the menu key.")
-	end
-end
-
+-- The profile was chosen at the main menu, before this game: no question
+-- here. None plays the save's character; a profile gets target().
 local function decide()
 	local p = profile()
 	if arrival.level_change then
@@ -377,17 +359,14 @@ local function decide()
 		return
 	end
 	arrival = nil
-	local sel, tag = p.current_profile(), world_tag()
-	if tag and tag == sel then
-		if sel == p.NONE then
-			go_none("this world was last played without a profile")
-		else
-			apply_target()
-		end
-		return
+	local sel = p.current_profile()
+	log("playing as %s (this world was last played with %s)", sel, tostring(world_tag() or "nothing"))
+	if sel == p.NONE then
+		go_none("None is selected at the main menu")
+		tip("playing without a profile: nothing is written")
+	else
+		apply_target()
 	end
-	log("this world was last played with %s, %s is selected: asking", tostring(tag or "nothing"), sel)
-	ask()
 end
 
 local function arrival_update(now)
@@ -405,7 +384,8 @@ local function arrival_update(now)
 		if now - arrival.settled_t < CLIENT_SETTLE then
 			return
 		end
-		if not got_world and now - arrival.t < WORLD_WAIT then
+		-- only "save" mode needs the key: its snapshot is kept under it
+		if mode() == "save" and not got_world and now - arrival.t < WORLD_WAIT then
 			return
 		end
 	elseif now - arrival.t < HOST_SETTLE then
@@ -434,170 +414,61 @@ local function on_first_update()
 end
 
 -------------------------------------------------------------------------------
--- The profile menu's choices (persistent_stalkers_menu). pick() is called by
--- the menu; the choice runs on the next update, once the menu is closed (and
--- the game unpaused).
---   arrival  the world's first choice: the profile's character for this
---            world (target(): in "save" mode a save played with it keeps
---            its own), or None.
---   switch   during play: the profile in use is written first, then the new
---            one's character (its file) replaces the actor. None stops
---            using a profile; the character stays.
--- A profile with no character yet (a new one) takes the character as it is:
--- a copy, so a playthrough can go two ways.
+-- Console, for development: play another profile without quitting to the
+-- main menu (where a player changes it). The profile in use is written
+-- first, then the new one's character (its file) replaces the actor; an
+-- empty one takes the character as it is. None stops using a profile; the
+-- character stays. The selection follows, so the main menu shows it next.
 
--- Can the menu be opened to switch now? Returns ok, why.
-function can_switch()
-	if not enabled() then
-		return false, "Save mode is Off in MCM."
-	end
-	if not in_game() then
-		return false, nil
-	end
-	if pending_pick or state().busy() or phase == "applying" then
-		return false, "a restore is running"
-	end
-	if phase == "waiting" or phase == "choosing" or phase == "idle" then
-		return false, "the character is still being restored after the load"
-	end
-	if phase == "dead" or not db.actor:alive() or dante_busy() then
-		return false, "not while dying"
-	end
-	return phase == "live" or phase == "none", nil
-end
-
-function pick(name, how)
-	pending_pick = { name = name, how = how }
-	log("menu (%s): %s", how, tostring(name))
-end
-
--- The menu's line about what choosing name does.
-function describe_choice(name, how)
+function switch_to(name)
 	local p = profile()
-	local cur = phase == "live" and p.current_profile() or nil
+	if not (in_game() and enabled()) then
+		tip("not in a game, or Save mode is Off in MCM")
+		return
+	end
+	if not (name == p.NONE or (type(name) == "string" and p.has_profile(name))) then
+		tip("no profile " .. tostring(name))
+		return
+	end
+	if not (phase == "live" or phase == "none") or state().busy() or not db.actor:alive() or dante_busy() then
+		tip("could not switch profiles now (phase " .. phase .. ")")
+		return
+	end
+	if (name == p.NONE and phase == "none") or (name == p.current_profile() and phase == "live") then
+		return
+	end
+	if phase == "live" then
+		write("switching to " .. name)
+	end
+	log("profile: %s -> %s", p.current_profile(), name)
+	p.use_profile(name)
+	remember(name)
 	if name == p.NONE then
-		if how == "arrival" then
-			return "Play the character this save loaded, without a profile. Nothing is written to any profile."
-		end
-		if cur then
-			return string.format("Stop using %s: it is saved now, and nothing is written after. You keep the character you have.", cur)
-		end
-		return "You are playing without a profile."
-	end
-	local i = p.info(name)
-	local empty = not (i and i.character)
-	if how == "switch" and name == cur then
-		return string.format("You are playing as %s.", name)
-	end
-	local first = how == "switch" and cur and string.format("%s is saved now. ", cur) or ""
-	if empty then
-		return first .. string.format("%s is empty: it takes the character you have now (a copy).", name)
-	end
-	if how == "arrival" then
-		if setting("mode") == "save" and is_host() and loaded and loaded.profile == name then
-			return string.format("This save was played as %s: you keep the save's character, and %s follows your saves from now on.", name, name)
-		end
-		if setting("mode") == "save" and not is_host() then
-			return string.format("The copy of %s kept for this save (if there is one, else %s's character) replaces the one you joined with: gear, and what is ticked in MCM. Health and bleeding stay.", name, name)
-		end
-		return string.format("%s's character replaces the one this save loaded: gear, and what is ticked in MCM. Health and bleeding stay the save's.", name)
-	end
-	return first .. string.format("Then %s's character replaces yours: gear, and what is ticked in MCM. Health and bleeding stay. Save the game afterwards so your saves follow %s.", name, name)
-end
-
-local function run_pick(pk)
-	local p = profile()
-	if not in_game() then
-		return
-	end
-	if pk.how == "switch" then
-		if state().busy() or not db.actor:alive() or dante_busy() then
-			tip("could not switch profiles now")
-			return
-		end
-		if (pk.name == p.NONE and phase == "none") or (pk.name == p.current_profile() and phase == "live") then
-			return
-		end
-		if phase == "live" then
-			write("switching to " .. pk.name)
-		end
-	elseif phase ~= "choosing" then
-		return -- the arrival was cancelled (mode switched off)
-	end
-	if pk.name ~= p.current_profile() then
-		log("profile: %s -> %s", p.current_profile(), pk.name)
-	end
-	p.use_profile(pk.name)
-	remember(pk.name)
-	if pk.name == p.NONE then
-		go_none("chosen in the menu")
-		tip(pk.how == "arrival" and "playing this save's character without a profile: nothing is written"
-			or "no profile now: you keep your character, and nothing is written")
-		return
-	end
-	if pk.how == "arrival" then
-		apply_target()
+		go_none("console")
+		tip("no profile now: you keep your character, and nothing is written")
 		return
 	end
 	local c = p.character()
-	local what = string.format("playing as %s; save the game so your saves follow it", pk.name)
+	local what = string.format("playing as %s; save the game so your saves follow it", name)
 	if c then
-		apply_character(c, "switched in the menu", what)
+		apply_character(c, "switched from the console", what)
 	else
 		go_live("a new profile takes the character as it is")
 		tip(what)
 	end
 end
 
--- MCM's "Open the profile menu" button: opened once MCM is closed.
-function request_menu()
-	menu_wanted = true
-end
-
-local function mcm_open()
-	local ok, shown = pcall(function()
-		local g = ui_mcm.get_gui and ui_mcm.get_gui()
-		return g and g:IsShown()
-	end)
-	return ok and shown and true or false
-end
-
 local function update()
 	local now = time_global()
 	state().update()
-	if pending_pick then
-		local pk = pending_pick
-		pending_pick = nil
-		run_pick(pk)
-	elseif phase == "waiting" and arrival then
+	if phase == "waiting" and arrival then
 		arrival_update(now)
-	elseif phase == "choosing" then
-		-- something else closed the arrival's menu (a death, another mod's
-		-- dialog): open it again
-		if not menu().is_open() and db.actor:alive() then
-			menu_gone_t = menu_gone_t or now
-			if now - menu_gone_t >= REOPEN_AFTER then
-				log("the profile menu was closed without a choice: opening it again")
-				ask()
-			end
-		else
-			menu_gone_t = nil
-		end
 	elseif phase == "live" and mode() == "profile" and now >= next_write then
 		next_write = now + WRITE_EVERY
 		write()
 	elseif phase == "dead" and db.actor and db.actor:alive() and not dante_busy() then
 		-- the death was cancelled after all
 		go_live("alive again")
-	end
-	if menu_wanted and not mcm_open() then
-		menu_wanted = false
-		local ok, why = can_switch()
-		if ok then
-			menu().open("switch")
-		elseif why then
-			tip(why)
-		end
 	end
 end
 
@@ -699,16 +570,9 @@ local function on_level_changing()
 	state().cancel()
 end
 
-local function close_menu()
-	pcall(function() menu().close() end)
-end
-
 local function on_net_destroy()
 	state().cancel()
-	close_menu()
 	arrival = nil
-	pending_pick = nil
-	menu_wanted = false
 	if phase ~= "off" then
 		phase = "idle"
 	end
@@ -778,9 +642,7 @@ local function on_option_change()
 			log("mode off")
 		end
 		state().cancel()
-		close_menu()
 		arrival = nil
-		pending_pick = nil
 		phase = "off"
 	elseif phase == "off" or phase == "idle" then
 		tip("switched on: it starts when you next load a save or join a game")
@@ -853,7 +715,6 @@ end
 
 function on_game_end()
 	state().cancel()
-	close_menu()
 	UnregisterScriptCallback("actor_on_first_update", on_first_update)
 	UnregisterScriptCallback("actor_on_update", update)
 	UnregisterScriptCallback("save_state", save_state)

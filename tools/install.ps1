@@ -1,9 +1,13 @@
-# Installs (or refreshes) Persistent Stalkers into Mod Organizer as a real folder of
+# Installs (or refreshes) Persistent Stalkers v2 (PS_v2) into Mod Organizer as a real folder of
 # hardlinks to the files in this repo, creates the target profile from the
 # G.A.M.M.A one if it does not exist yet, and enables the mod in it.
 #
-#   powershell -ExecutionPolicy Bypass -File D:\Code\Persistent_stalkers\tools\install.ps1
+#   powershell -ExecutionPolicy Bypass -File "D:\Code\Stalker mods\PS_v2\tools\install.ps1"
 #   ... -GammaDir E:\GAMMA -ProfileName GEM -SourceProfile G.A.M.M.A
+#   ... -Replaces ''    leaves the first version (Persistent_stalkers) enabled
+#
+# The first version (Persistent_stalkers) is disabled in the profile: both have
+# the same script names. Its folder in mods is left as it is.
 #   ... -WhatIf    lists what it would do
 #
 # Run it after edits: editors often replace a file instead of writing into
@@ -16,7 +20,8 @@ param(
 	[string]$GammaDir = 'D:\GAMMA',
 	[string]$ProfileName = 'GEM',
 	[string]$SourceProfile = 'G.A.M.M.A',
-	[string]$ModName = 'Persistent_stalkers',
+	[string]$ModName = 'PS_v2',
+	[string]$Replaces = 'Persistent_stalkers',
 	[switch]$WhatIf
 )
 
@@ -108,6 +113,15 @@ if ($index -ge 0 -and $lines[$index] -eq "+$ModName") {
 	while ($at -lt $lines.Count -and $lines[$at].StartsWith('#')) { $at++ }
 	$lines.Insert($at, "+$ModName")
 	$actions += "added +$ModName at line $($at + 1)"
+}
+# The first version has the same script names: only one of the two is enabled.
+if ($Replaces -and $Replaces -ne $ModName) {
+	for ($i = 0; $i -lt $lines.Count; $i++) {
+		if ($lines[$i] -eq "+$Replaces") {
+			$lines[$i] = "-$Replaces"
+			$actions += "disabled $Replaces (line $($i + 1))"
+		}
+	}
 }
 if ($actions.Count -eq 0) {
 	return

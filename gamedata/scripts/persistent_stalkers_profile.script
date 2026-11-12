@@ -3,8 +3,9 @@
 --
 -- A profile is one character: what it carries and where (slots, belt), its
 -- money, rank, reputation, faction goodwill, hunger, thirst, sleep, and
--- other per-actor state (persistent_stalkers_state.script). Profiles are named and chosen in
--- the profile menu (persistent_stalkers_menu.script); MCM can create and
+-- other per-actor state (persistent_stalkers_state.script). Profiles are named and chosen at
+-- the main menu (persistent_stalkers_menu.script, the panel of
+-- ui_main_menu.script), which can also create them; MCM can create and
 -- remove them. The choice is this machine's, not the save's. Profiles do not
 -- depend on the nickname.
 --   the choice: $app_data_root$\persistent_stalkers_selected.txt
@@ -100,7 +101,7 @@ local SPEC = {
 	current = function() return current_profile() end,
 	empty = empty,
 	has_content = function(t) return type(t.character) == "table" end,
-	created = "Created %s (empty: it takes the character you have when you first choose it). Choose it in the profile menu.",
+	created = "Created %s (empty: it takes the character of the first game you play with it). Choose it at the main menu.",
 	kept = " Its character is kept in %s",
 }
 
@@ -116,8 +117,8 @@ function has_profile(name)
 	return master_core_profiles.has(SPEC, name)
 end
 
--- The selection: the profile last chosen in the profile menu, which the next
--- game starts from. Kept in $app_data_root$\persistent_stalkers_selected.txt
+-- The selection: the profile chosen at the main menu, which every game
+-- started, loaded or joined is played with. Kept in $app_data_root$\persistent_stalkers_selected.txt
 -- ({ profile = name }). Until 2026-11-11 it was MCM's
 -- "persistent_stalkers/active"; that value is read once when the file is not
 -- there yet (straight from axr_options: MCM's get refuses a key with no
@@ -156,7 +157,7 @@ function selected_profile()
 	return "default"
 end
 
--- Remembers the profile chosen in the profile menu for the next game.
+-- Remembers the chosen profile for the next game.
 function set_selected(name)
 	if name ~= NONE and not valid_profile_name(name) then
 		return false
@@ -172,15 +173,33 @@ function current_profile()
 	return profile_in_use or selected_profile()
 end
 
--- Fixes the profile in use for this game (on each map's first update); only
--- the profile menu (use_profile) changes it after that.
+-- Fixes the profile in use for this game (on each map's first update). Only
+-- the console's switch (use_profile) changes it after that.
 function pin()
 	if not profile_in_use then
 		profile_in_use = selected_profile()
 	end
 end
 
--- Switches the file in use. The caller (persistent_stalkers.run_pick)
+-- No game is running (the main menu): nothing is in use, and the selection
+-- is what current_profile gives.
+function unpin()
+	profile_in_use = nil
+	data = nil
+	saves = nil
+end
+
+-- The main menu's choice: the selection, with nothing in use. Returns true
+-- when it is remembered.
+function choose(name)
+	if name ~= NONE and not (valid_profile_name(name) and has_profile(name)) then
+		return false
+	end
+	unpin()
+	return set_selected(name)
+end
+
+-- Switches the file in use. The caller (persistent_stalkers.switch_to)
 -- writes the old one first and applies the new one.
 function use_profile(name)
 	profile_in_use = name
@@ -228,7 +247,7 @@ local function item_count(c)
 	return type(c) == "table" and type(c.items) == "table" and #c.items or 0
 end
 
--- Any listed profile's file, for the profile menu: { character (or nil),
+-- Any listed profile's file, for the main menu's panel: { character (or nil),
 -- revision, written }. nil for None or a name not on the list.
 function info(name)
 	if name == NONE or not has_profile(name) then
@@ -346,8 +365,8 @@ end
 -- Which profile each host save was played with, on a client (a client has no
 -- save to keep it in): $app_data_root$\persistent_stalkers_worlds.txt,
 -- { order = { newest key first }, by_key = { [key] = profile or NONE } }.
--- The arrival asks only when the loaded save's entry is not the selected
--- profile.
+-- Only status() shows it: which character a client gets is decided by its
+-- snapshots.
 
 local WORLDS_KEPT = 100
 local worlds

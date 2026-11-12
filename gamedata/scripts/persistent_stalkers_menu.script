@@ -1,22 +1,23 @@
--- Persistent Stalkers: the profile menu (AGENTS.md, "Profile menu").
+-- Persistent Stalkers: the profile panel of the main menu (AGENTS.md, "The
+-- main menu").
 --
--- Left: the profiles, None first ("this save's character" on arrival, "your
--- current character" when switching), and a box to make a new profile from
--- the character you have. Right: the chosen row's character, read only: its
--- name and stats, then its loadout: the equipment column exactly as
--- G.A.M.M.A.'s inventory lays it out (its background, slot cells, condition
--- bars and blockers, scaled down), the backpack as a grid of icons beside
--- it, the game's item card on hover. Below: what choosing it does, and the
--- button.
+-- ui_main_menu.script attaches it (attach(mm)) each time the menu is made:
+-- at the main menu, and as the pause menu in a game. It sits left to middle;
+-- the game's options are on the right.
 --
---   open("arrival")  after a load whose save was not played with the selected
---                    profile. It cannot be closed without a choice.
---   open("switch")   the menu key (MCM, F8 by default) or MCM's button, while
---                    playing. Closed with Esc, the key or Close.
---
--- A choice goes to persistent_stalkers.pick(name, how) and runs on the next
--- update, after the menu is closed. In solo the game can be paused while the
--- menu is open (MCM "pause_menu", off by default: untested).
+-- Left: the profiles, None first. At the main menu a click selects: that is
+-- the profile every game started, loaded or joined from here is played with
+-- (persistent_stalkers_profile.choose, remembered in a file). "New profile"
+-- opens a small box for the name; the new one is empty and is selected.
+-- "Remove profile" removes the selected row (never default, never None)
+-- after a warning box; default is selected instead, and the files are kept
+-- as a backup. In a game the panel only shows the profile in use: changing
+-- it means quitting to the main menu.
+-- Right of the list: the selected row's character, read only: its name and
+-- stats, then its loadout: the equipment column exactly as G.A.M.M.A.'s
+-- inventory lays it out (its background, slot cells, condition bars and
+-- blockers, scaled down), the backpack as a grid of icons beside it, the
+-- game's item card on hover. Below: what playing with it does.
 --
 -- Icons are each item's inv_grid_* cell of its icons_texture, 50 px a cell.
 -- The window is 1024x768 units stretched to the screen: on 16:9 a unit is
@@ -24,7 +25,7 @@
 -- keep icons their shape.
 
 local XML_FILE = "ui_persistent_stalkers.xml"
-local ROWS = 15 -- profile rows shown at once; the arrows page through more
+local ROWS = 12 -- profile rows shown at once; the arrows page through more
 local ICON_PX = 50 -- pixels a grid cell in the icon textures
 local BAG_CELLS = { 30, 26, 22, 18, 15, 12, 10 } -- backpack cell heights tried, largest that fits
 -- The equipment column as G.A.M.M.A.'s inventory has it (G.A.M.M.A. UI's
@@ -111,11 +112,6 @@ local function unit_ratio()
 	return ok and type(r) == "number" and r > 0 and r or 1
 end
 
-local function menu_key()
-	local k = tonumber(core().setting("menu_key"))
-	return k or (DIK_keys and DIK_keys.DIK_F8)
-end
-
 local function section_ok(sec)
 	return type(sec) == "string" and ini_sys:section_exist(sec)
 end
@@ -155,91 +151,97 @@ local function outfit_room(it)
 	return helm ~= false, bkpk ~= false
 end
 
------------------------------------------------------------------- the window
+local MODE_NAMES = { off = "Off", profile = "Character lives in the profile", save = "Character follows the save" }
 
-GUI = nil
-local closed_by_key = false -- the key closed the menu: its release must not open it again
+------------------------------------------------------------------ the panel
 
-class "UIProfileMenu" (CUIScriptWnd)
+-- Not a window of its own: its controls are children of a static of the main
+-- menu, and its buttons are registered with the main menu (names pst_*).
+class "ProfilePanel"
 
-function UIProfileMenu:__init(how) super()
-	self.how = how -- "arrival" or "switch"
+function ProfilePanel:__init(mm)
+	self.mm = mm
+	self.in_game = level.present() and true or false
 	self.first = 1 -- the first profile row shown
 	self.rows = {}
 	self.cells = {} -- { wnd, sec } of the shown loadout, for the hover card
 	self.R = unit_ratio()
-	self:SetWndRect(Frect():set(0, 0, 1024, 768))
-	self:SetAutoDelete(true)
 	self.xml = CScriptXmlInit()
 	self.xml:ParseFile(XML_FILE)
-	self:Build()
+	self.wnd = self.xml:InitStatic("menu:panel", mm)
 	local p = profile()
-	-- the row shown first: the profile in use (or chosen last), None when that is None
+	if not self.in_game then
+		-- no game: nothing is in use, the selection is what counts
+		p.unpin()
+	end
+	self:Build()
 	self.chosen = p.current_profile()
 	self:Refresh()
 end
 
-function UIProfileMenu:__finalize()
-end
-
-function UIProfileMenu:Button(node, name, fn)
-	local b = self.xml:Init3tButton(node, self)
-	self:Register(b, name)
-	self:AddCallback(name, ui_events.BUTTON_CLICKED, function() guard(name, fn, self) end, self)
+function ProfilePanel:Button(node, name, fn)
+	local b = self.xml:Init3tButton(node, self.wnd)
+	self.mm:Register(b, name)
+	self.mm:AddCallback(name, ui_events.BUTTON_CLICKED, function() guard(name, fn, self) end, self.mm)
 	return b
 end
 
-function UIProfileMenu:Build()
-	local xml = self.xml
-	xml:InitFrame("menu:background", self)
-	self.title = xml:InitTextWnd("menu:title", self)
-	self.list_title = xml:InitTextWnd("menu:list_title", self)
+function ProfilePanel:Build()
+	local xml, wnd = self.xml, self.wnd
+	xml:InitFrame("menu:background", wnd)
+	self.title = xml:InitTextWnd("menu:title", wnd)
+	self.list_title = xml:InitTextWnd("menu:list_title", wnd)
 	-- Rows are check buttons with their text on top, as MCM's own list
-	-- (elements:btn_list): the chosen one is kept checked, so it stays
+	-- (elements:btn_list): the selected one is kept checked, so it stays
 	-- pressed (SetCheck in Refresh).
-	local row = xml:InitStatic("menu:row", self)
+	local row = xml:InitStatic("menu:row", wnd)
 	local pos = row:GetWndPos()
 	local rw, rh = row:GetWidth(), row:GetHeight()
 	row:Show(false)
 	self.row_texts = {}
 	for i = 1, ROWS do
-		local name = "row_" .. i
+		local name = "pst_row_" .. i
 		local y = pos.y + (i - 1) * (rh + 3)
-		local b = xml:InitCheck("menu:row", self)
-		self:Register(b, name)
-		self:AddCallback(name, ui_events.BUTTON_CLICKED, function() guard(name, self.OnRow, self, i) end, self)
+		local b = xml:InitCheck("menu:row", wnd)
+		self.mm:Register(b, name)
+		self.mm:AddCallback(name, ui_events.BUTTON_CLICKED, function() guard(name, self.OnRow, self, i) end, self.mm)
 		at(b, pos.x, y, rw, rh)
-		local t = xml:InitTextWnd("menu:row_text", self)
+		local t = xml:InitTextWnd("menu:row_text", wnd)
 		at(t, pos.x + 8, y, rw - 12, rh)
 		self.rows[i] = b
 		self.row_texts[i] = t
 	end
-	self.btn_up = self:Button("menu:btn_up", "btn_up", function(s) s:Page(-1) end)
-	self.btn_down = self:Button("menu:btn_down", "btn_down", function(s) s:Page(1) end)
-	self.new_caption = xml:InitTextWnd("menu:new_caption", self)
-	self.new_name = xml:InitEditBox("menu:new_name", self)
-	self.btn_create = self:Button("menu:btn_create", "btn_create", self.OnCreate)
+	self.btn_up = self:Button("menu:btn_up", "pst_btn_up", function(s) s:Page(-1) end)
+	self.btn_down = self:Button("menu:btn_down", "pst_btn_down", function(s) s:Page(1) end)
+	self.btn_new = self:Button("menu:btn_new", "pst_btn_new", self.OnNew)
+	self.btn_new:Show(not self.in_game)
+	self.btn_remove = self:Button("menu:btn_remove", "pst_btn_remove", self.OnRemove)
+	self.btn_remove:Show(false)
+	self.note = xml:InitTextWnd("menu:note", wnd)
 
-	self.details = xml:InitTextWnd("menu:details", self)
-	self.equip = xml:InitStatic("menu:equip", self)
+	self.details = xml:InitTextWnd("menu:details", wnd)
+	self.equip = xml:InitStatic("menu:equip", wnd)
 	self:BuildColumn()
-	self.bag = xml:InitStatic("menu:bag", self)
-	self.bag_caption = xml:InitTextWnd("menu:bag_caption", self)
-	self.what = xml:InitTextWnd("menu:what", self)
-	self.btn_play = self:Button("menu:btn_play", "btn_play", self.OnPlay)
-	self.btn_close = self:Button("menu:btn_close", "btn_close", self.Close)
-	self.btn_close:Show(self.how == "switch")
+	self.bag = xml:InitStatic("menu:bag", wnd)
+	self.bag_caption = xml:InitTextWnd("menu:bag_caption", wnd)
+	-- the backpack goes right of the column (whose width depends on the
+	-- screen), up to its own right edge in the layout
+	local bpos = self.bag:GetWndPos()
+	local right = bpos.x + self.bag:GetWidth()
+	local bx = self.equip:GetWndPos().x + self.equip:GetWidth() + 10
+	at(self.bag, bx, bpos.y, math.max(40, right - bx), self.bag:GetHeight())
+	at(self.bag_caption, bx, self.bag_caption:GetWndPos().y, math.max(40, right - bx), self.bag_caption:GetHeight())
+	self.what = xml:InitTextWnd("menu:what", wnd)
 
-	self.title:SetText(self.how == "arrival" and "Which character do you play in this game?" or "Profiles")
-	self.list_title:SetText("Profiles")
-	self.new_caption:SetText("New profile from the character you have now:")
-	self.btn_create:TextControl():SetText("Create and play")
+	self.title:SetText(self.in_game and "Your character in this game" or "Choose your character")
+	self.list_title:SetText(self.in_game and "Profile in use" or "Profiles")
+	self.btn_new:TextControl():SetText("New profile")
+	self.btn_remove:TextControl():SetText("Remove profile")
 	self.btn_up:TextControl():SetText("Up")
 	self.btn_down:TextControl():SetText("Down")
-	self.btn_close:TextControl():SetText("Close")
 	self.bag_caption:SetText("Backpack")
 
-	local ok, info = pcall(function() return utils_ui.UIInfoItem(self, 400) end)
+	local ok, info = pcall(function() return utils_ui.UIInfoItem(self.mm, 400) end)
 	self.info = ok and info or nil
 	if not ok then
 		log("! menu: no item card (%s)", tostring(info))
@@ -250,7 +252,7 @@ end
 -- widened or narrowed from the 16:9 its units are made for to this screen
 -- (k). Its background is the inventory's own, cut off below the belt; if the
 -- cut cannot be made, the background is left out and the cells get boxes.
-function UIProfileMenu:BuildColumn()
+function ProfilePanel:BuildColumn()
 	local ph = self.equip:GetHeight()
 	self.s = ph / INV.crop
 	self.k = self.R / INV.ratio
@@ -273,14 +275,18 @@ function UIProfileMenu:BuildColumn()
 end
 
 -- A cell of the column in window units, from G.A.M.M.A.'s units.
-function UIProfileMenu:InvBox(x, y, w, h)
+function ProfilePanel:InvBox(x, y, w, h)
 	local sx = self.s * self.k
 	return x * sx, y * self.s, w * sx, h * self.s
 end
 
--- The rows' values: None first, then every profile.
-function UIProfileMenu:Entries()
+-- The rows' values. At the main menu: None first, then every profile. In a
+-- game: only what is in use.
+function ProfilePanel:Entries()
 	local p = profile()
+	if self.in_game then
+		return { p.current_profile() }
+	end
 	local t = { p.NONE }
 	for _, n in ipairs(p.profiles()) do
 		t[#t + 1] = n
@@ -288,23 +294,10 @@ function UIProfileMenu:Entries()
 	return t
 end
 
--- The Skill tree class of a stored character (its translated name), or nil
--- when it has none or the profile was written without Skill tree.
-function class_name(c)
-	local st = type(c) == "table" and type(c.skill_tree) == "table" and c.skill_tree
-	local cls = st and st.class
-	if type(cls) ~= "string" or cls == "" then
-		return nil
-	end
-	local ok, s = pcall(game.translate_string, "st_spec_class_" .. cls)
-	return ok and type(s) == "string" and s ~= "st_spec_class_" .. cls and s or cls
-end
-
-function UIProfileMenu:Label(name)
+function ProfilePanel:Label(name)
 	local p = profile()
-	local phase = core().get_phase()
 	if name == p.NONE then
-		return self.how == "arrival" and "None: this save's character" or "None: keep my character"
+		return "None: each save's own"
 	end
 	local i = p.info(name)
 	local label = name
@@ -312,15 +305,13 @@ function UIProfileMenu:Label(name)
 	if cls then
 		label = label .. " - " .. cls
 	end
-	if self.how == "switch" and phase == "live" and name == p.current_profile() then
-		label = label .. "  (in use)"
-	elseif not (i and i.character) then
+	if not (i and i.character) then
 		label = label .. "  (empty)"
 	end
 	return label
 end
 
-function UIProfileMenu:Refresh()
+function ProfilePanel:Refresh()
 	local entries = self:Entries()
 	self.entries = entries
 	if #entries <= ROWS then
@@ -342,31 +333,96 @@ function UIProfileMenu:Refresh()
 	end
 	self.btn_up:Show(#entries > ROWS)
 	self.btn_down:Show(#entries > ROWS)
+	self.btn_remove:Show(self:Removable(self.chosen))
 	self:ShowChosen()
 end
 
-function UIProfileMenu:Page(d)
+function ProfilePanel:Page(d)
 	self.first = self.first + d * (ROWS - 1)
 	self:Refresh()
 end
 
-function UIProfileMenu:OnRow(i)
-	local name = self.entries and self.entries[self.first + i - 1]
-	if name then
-		self.chosen = name
-		self:Refresh()
+-- Brings the row of name into view.
+function ProfilePanel:Reveal(name)
+	for i, n in ipairs(self:Entries()) do
+		if n == name then
+			if i < self.first or i > self.first + ROWS - 1 then
+				self.first = math.max(1, i - ROWS + 1)
+			end
+			return
+		end
 	end
 end
 
--- The chosen row's character: None shows the actor as it is now.
-function UIProfileMenu:ShowChosen()
+-- Makes name the selection: the profile the next game is played with. Only
+-- at the main menu.
+function ProfilePanel:Select(name)
+	if self.in_game then
+		return false
+	end
+	local p = profile()
+	if name ~= p.current_profile() then
+		if not p.choose(name) then
+			log("! menu: %s could not be selected", tostring(name))
+			return false
+		end
+		log("profile selected at the main menu: %s", name)
+	end
+	self.chosen = name
+	self:Reveal(name)
+	self:Refresh()
+	return true
+end
+
+function ProfilePanel:OnRow(i)
+	local name = self.entries and self.entries[self.first + i - 1]
+	if name and not self.in_game then
+		self:Select(name)
+	else
+		self:Refresh() -- puts the row's check back
+	end
+end
+
+-- What playing with the row means, for the line under the loadout.
+function ProfilePanel:Describe(name, has_character)
+	local p = profile()
+	local mode = core().setting("mode")
+	local on = mode == "profile" or mode == "save"
+	if self.in_game then
+		local change = " To play another one, quit to the main menu and choose it there."
+		if not on then
+			return "Save mode is Off in MCM: no profile is in use in this game." .. change
+		end
+		if name == p.NONE then
+			return "You are playing this save's own character, without a profile. Nothing is written." .. change
+		end
+		return string.format("You are playing as %s.", name) .. change
+	end
+	if name == p.NONE then
+		return "No profile: every game is played with its own character, as without this mod. Nothing is read or written."
+	end
+	local off = on and "" or " (Save mode is Off in MCM now: nothing happens until you pick a mode there.)"
+	if not has_character then
+		return string.format("%s is empty: it takes the character of the first game you start, load or join with it. A new game gives it the starting character; a save gives it a copy of that save's character.", name) .. off
+	end
+	if mode == "profile" then
+		return string.format("Every game you start, load or join is played as %s, exactly as you left it. Health and bleeding stay the save's.", name) .. off
+	end
+	return string.format("Every game you start, load or join is played as %s. A save you made as %s keeps that save's character; any other game gets %s as it was at your last save. Health and bleeding stay the save's.", name, name, name) .. off
+end
+
+-- The selected row's character. None has none at the main menu; in a game
+-- it shows the actor as it is now.
+function ProfilePanel:ShowChosen()
 	local p = profile()
 	local name = self.chosen
 	local c, head
 	if name == p.NONE then
-		local ok, cur = pcall(state().read)
-		c = ok and cur or nil
-		head = string.format("%%c[255,235,200,75]%s%%c[default]", self.how == "arrival" and "This save's character" or "Your character now")
+		if self.in_game and db.actor then
+			local ok, cur = pcall(state().read)
+			c = ok and cur or nil
+		end
+		head = string.format("%%c[255,235,200,75]%s%%c[default]", self.in_game and "This save's character" or "No profile")
 	else
 		local i = p.info(name) or {}
 		c = i.character
@@ -398,25 +454,31 @@ function UIProfileMenu:ShowChosen()
 				class_name(c) or "none", perks,
 				tostring(xp.general or 0), cxp and (", " .. tostring(cxp) .. " class") or "")
 		end
-	else
-		lines[#lines + 1] = "Empty: it takes the character you have when you choose it."
+	elseif name ~= p.NONE then
+		lines[#lines + 1] = "Empty: no character yet."
 	end
 	self.details:SetText(table.concat(lines, " \\n"))
 	guard("loadout", self.ShowLoadout, self, c)
+	self.what:SetText(self:Describe(name, c ~= nil))
+	local mode = core().setting("mode")
+	self.note:SetText(string.format("Save mode (MCM):\\n%s", MODE_NAMES[mode] or MODE_NAMES.off))
+end
 
-	self.what:SetText(core().describe_choice(name, self.how))
-	local current = self.how == "switch" and (
-		(name == p.NONE and core().get_phase() == "none") or
-		(name == p.current_profile() and core().get_phase() == "live"))
-	self.btn_play:Enable(not current)
-	self.btn_play:TextControl():SetText(name == p.NONE
-		and (self.how == "arrival" and "Play this character" or "Stop using a profile")
-		or ("Play as " .. name))
+-- The Skill tree class of a stored character (its translated name), or nil
+-- when it has none or the profile was written without Skill tree.
+function class_name(c)
+	local st = type(c) == "table" and type(c.skill_tree) == "table" and c.skill_tree
+	local cls = st and st.class
+	if type(cls) ~= "string" or cls == "" then
+		return nil
+	end
+	local ok, s = pcall(game.translate_string, "st_spec_class_" .. cls)
+	return ok and type(s) == "string" and s ~= "st_spec_class_" .. cls and s or cls
 end
 
 ------------------------------------------------------------------ the loadout
 
-function UIProfileMenu:ClearLoadout()
+function ProfilePanel:ClearLoadout()
 	if self.equip_layer then self.equip:DetachChild(self.equip_layer) end
 	if self.bag_layer then self.bag:DetachChild(self.bag_layer) end
 	self.equip_layer, self.bag_layer = nil, nil
@@ -429,7 +491,7 @@ end
 -- the window is sized as G.A.M.M.A.'s utils_ui does it: the ratio goes to
 -- the height, which lies across the screen once turned), bar ({ x, y, w, h }:
 -- a slot's condition bar, the inventory's grey one, always shown).
-function UIProfileMenu:Icon(layer, it, x, y, w, h, count, opts)
+function ProfilePanel:Icon(layer, it, x, y, w, h, count, opts)
 	opts = opts or {}
 	local sec = it.section
 	if not section_ok(sec) then
@@ -533,7 +595,7 @@ local function pack(list, cols)
 	return rows
 end
 
-function UIProfileMenu:ShowLoadout(c)
+function ProfilePanel:ShowLoadout(c)
 	self:ClearLoadout()
 	self.equip_layer = self.xml:InitStatic("menu:layer", self.equip)
 	self.bag_layer = self.xml:InitStatic("menu:layer", self.bag)
@@ -629,68 +691,76 @@ end
 
 ------------------------------------------------------------------ actions
 
-function UIProfileMenu:Finish(name)
-	self:Pause(false)
-	self:HideDialog()
-	core().pick(name, self.how)
-end
-
-function UIProfileMenu:OnPlay()
-	if not self.chosen then
+function ProfilePanel:OnNew()
+	if self.in_game then
 		return
 	end
-	self:Finish(self.chosen)
+	-- kept on the main menu, so it lives as long as the menu does
+	self.mm.pst_new_dlg = UINewProfile(self)
+	self.mm.pst_new_dlg:ShowDialog(true)
 end
 
-function UIProfileMenu:OnCreate()
-	local name = self.new_name:GetText() or ""
-	name = name:match("^%s*(.-)%s*$")
-	local ok, msg = profile().create_profile(name)
+-- Whether the row can be removed here: a profile, not default, at the main
+-- menu.
+function ProfilePanel:Removable(name)
+	local p = profile()
+	return not self.in_game and type(name) == "string" and name ~= p.NONE and name ~= "default" and p.has_profile(name)
+end
+
+function ProfilePanel:OnRemove()
+	if not self:Removable(self.chosen) then
+		return
+	end
+	self.mm.pst_remove_dlg = UIRemoveProfile(self, self.chosen)
+	self.mm.pst_remove_dlg:ShowDialog(true)
+end
+
+-- Removes name (the warning box's Remove). Master Core never removes the
+-- profile in use, so when it is the selected one default is selected first,
+-- and back again if the removal fails. Returns ok, message.
+function ProfilePanel:Remove(name)
+	if not self:Removable(name) then
+		return false, "This profile cannot be removed."
+	end
+	local p = profile()
+	local was = p.current_profile()
+	if was == name and not p.choose("default") then
+		return false, "default could not be selected."
+	end
+	local ok, msg = p.remove_profile(name, name)
 	if not ok then
-		self.what:SetText("%c[255,230,120,90]" .. tostring(msg))
-		return
-	end
-	self.new_name:SetText("")
-	self:Finish(name)
-end
-
-function UIProfileMenu:Close()
-	if self.how ~= "switch" then
-		return
-	end
-	self:Pause(false)
-	self:HideDialog()
-end
-
--- Solo only, and only with MCM "pause_menu" on.
-function UIProfileMenu:Pause(on)
-	if on then
-		if core().setting("pause_menu") ~= true or core().in_session() then
-			return
+		if was == name then
+			p.choose(name)
 		end
-		local ok, paused = pcall(function() return device():is_paused() end)
-		if ok and not paused and pcall(function() device():pause(true) end) then
-			self.paused = true
-		end
-	elseif self.paused then
-		self.paused = false
-		pcall(function() device():pause(false) end)
+		return false, msg
 	end
+	log("profile removed at the main menu: %s (%s)", name, tostring(msg))
+	self.chosen = p.current_profile()
+	self:Reveal(self.chosen)
+	self:Refresh()
+	return true, msg
 end
 
-function UIProfileMenu:Update()
-	CUIScriptWnd.Update(self)
+function ProfilePanel:HideCard()
+	pcall(function() self.info:Show(false) end)
+end
+
+-- Each frame, from the main menu's Update: the item card under the cursor.
+function ProfilePanel:Update()
 	if not self.info then
 		return
 	end
 	local hover
-	for _, c in ipairs(self.cells) do
-		if c.wnd:IsCursorOverWindow() then
-			hover = c.sec
-			break
+	local dlg = (self.mm.pst_new_dlg and self.mm.pst_new_dlg:IsShown()) or (self.mm.pst_remove_dlg and self.mm.pst_remove_dlg:IsShown())
+	if self.mm:IsShown() and not dlg then
+		for _, c in ipairs(self.cells) do
+			if c.wnd:IsCursorOverWindow() then
+				hover = c.sec
+				break
+			end
 		end
 	end
-	local ok = pcall(function()
+	local ok, err = pcall(function()
 		if hover then
 			self.info:Update(nil, hover)
 		else
@@ -698,88 +768,151 @@ function UIProfileMenu:Update()
 		end
 	end)
 	if not ok then
+		log("! menu: the item card failed (%s); dropped", tostring(err))
+		self:HideCard()
 		self.info = nil
 	end
 end
 
-function UIProfileMenu:OnKeyboard(dik, keyboard_action)
+------------------------------------------------------------------ new profile
+
+-- A small box over the main menu: a name, Create, Cancel. Its own dialog, so
+-- typing a name never reaches the main menu's keys (Q quits there).
+class "UINewProfile" (CUIScriptWnd)
+
+function UINewProfile:__init(panel) super()
+	self.panel = panel
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	local xml = CScriptXmlInit()
+	xml:ParseFile(XML_FILE)
+	xml:InitFrame("new_profile:background", self)
+	self.title = xml:InitTextWnd("new_profile:title", self)
+	self.name = xml:InitEditBox("new_profile:name", self)
+	self.hint = xml:InitTextWnd("new_profile:hint", self)
+	self.btn_create = xml:Init3tButton("new_profile:btn_create", self)
+	self.btn_cancel = xml:Init3tButton("new_profile:btn_cancel", self)
+	self:Register(self.btn_create, "btn_create")
+	self:Register(self.btn_cancel, "btn_cancel")
+	self:AddCallback("btn_create", ui_events.BUTTON_CLICKED, function() guard("create", self.OnCreate, self) end, self)
+	self:AddCallback("btn_cancel", ui_events.BUTTON_CLICKED, function() guard("cancel", self.Close, self) end, self)
+	self.title:SetText("New profile: its name")
+	self.hint:SetText("Letters, digits, _ and - (up to 32). It starts empty and takes the character of the first game you play with it: a new game's starting character, or the character in the save you load.")
+	self.btn_create:TextControl():SetText("Create")
+	self.btn_cancel:TextControl():SetText("Cancel")
+end
+
+function UINewProfile:__finalize()
+end
+
+function UINewProfile:OnCreate()
+	local name = self.name:GetText() or ""
+	name = name:match("^%s*(.-)%s*$")
+	local ok, msg = profile().create_profile(name)
+	if not ok then
+		self.hint:SetText("%c[255,230,120,90]" .. tostring(msg))
+		return
+	end
+	self:Close()
+	guard("select", self.panel.Select, self.panel, name)
+end
+
+function UINewProfile:Close()
+	if self:IsShown() then
+		self:HideDialog()
+	end
+end
+
+function UINewProfile:OnKeyboard(dik, keyboard_action)
 	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
-	if res == false and keyboard_action == ui_events.WINDOW_KEY_PRESSED and self.how == "switch" then
+	if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
 		if dik == DIK_keys.DIK_ESCAPE then
 			self:Close()
-		elseif dik == menu_key() then
-			closed_by_key = true
-			self:Close()
+			return true
+		elseif dik == DIK_keys.DIK_RETURN or dik == DIK_keys.DIK_NUMPADENTER then
+			guard("create", self.OnCreate, self)
+			return true
 		end
 	end
 	return res
 end
 
------------------------------------------------------------------- open
+------------------------------------------------------------------ remove profile
 
-function is_open()
-	return GUI ~= nil and GUI:IsShown()
+-- The warning box over the main menu: what removing does, how a character
+-- comes back, Remove and Cancel (also Esc). Enter does nothing here, so a
+-- key held from elsewhere cannot remove a profile.
+class "UIRemoveProfile" (CUIScriptWnd)
+
+function UIRemoveProfile:__init(panel, name) super()
+	self.panel = panel
+	self.name = name
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	local xml = CScriptXmlInit()
+	xml:ParseFile(XML_FILE)
+	xml:InitFrame("remove_profile:background", self)
+	self.title = xml:InitTextWnd("remove_profile:title", self)
+	self.text = xml:InitTextWnd("remove_profile:message", self)
+	self.btn_remove = xml:Init3tButton("remove_profile:btn_remove", self)
+	self.btn_cancel = xml:Init3tButton("remove_profile:btn_cancel", self)
+	self:Register(self.btn_remove, "btn_remove")
+	self:Register(self.btn_cancel, "btn_cancel")
+	self:AddCallback("btn_remove", ui_events.BUTTON_CLICKED, function() guard("remove", self.OnRemove, self) end, self)
+	self:AddCallback("btn_cancel", ui_events.BUTTON_CLICKED, function() guard("cancel", self.Close, self) end, self)
+	self.title:SetText(string.format("%%c[255,230,120,90]Remove the profile %s?", name))
+	self.text:SetText(self:Warning())
+	self.btn_remove:TextControl():SetText("Remove")
+	self.btn_cancel:TextControl():SetText("Cancel")
 end
 
-function open(how)
-	if not db.actor then
-		return false
-	end
-	pcall(hide_hud_inventory)
-	if is_open() then
-		if GUI.how == how then
-			return true
-		end
-		GUI:Pause(false)
-		GUI:HideDialog()
-	end
-	GUI = UIProfileMenu(how)
-	GUI:ShowDialog(true)
-	GUI:Pause(true)
-	log("profile menu open (%s)", how)
-	return true
+function UIRemoveProfile:__finalize()
 end
 
-function close()
-	if is_open() then
-		GUI:Pause(false)
-		GUI:HideDialog()
-	end
-	GUI = nil
+function UIRemoveProfile:Warning()
+	local i = profile().info(self.name) or {}
+	local c = i.character
+	local what = c and string.format("Its character (%s items, %s RU, written %s) is taken off the list, with the copies kept for your saves.",
+		type(c.items) == "table" and #c.items or 0, tostring(c.money or "?"),
+		i.written and os.date("%Y-%m-%d %H:%M", i.written) or "never")
+		or "It is empty: it has no character yet."
+	return what
+		.. " \\n \\nA backup is kept in the game's appdata folder (persistent_stalkers_profile_" .. self.name .. ".removed-<time>.txt); it can be put back only by hand."
+		.. " \\n \\nTo play the character again later: create a new profile, select it, and load a save played with it (or join that game). A new profile takes the character of the first game played with it, so it becomes the character as that save holds it. What the profile gained after that save is only in the backup."
+		.. " \\n \\ndefault is selected after removing."
 end
 
-local function on_key_press(key)
-	if key == menu_key() then
-		closed_by_key = false
-	end
-end
-
-local function on_key_release(key)
-	if key ~= menu_key() then
+function UIRemoveProfile:OnRemove()
+	local ok, msg = self.panel:Remove(self.name)
+	if not ok then
+		self.text:SetText("%c[255,230,120,90]" .. tostring(msg))
 		return
 	end
-	if closed_by_key then
-		closed_by_key = false
-		return
-	end
-	if is_open() then
-		return
-	end
-	local ok, why = core().can_switch()
-	if ok then
-		open("switch")
-	elseif why then
-		core().tip(why)
+	self:Close()
+end
+
+function UIRemoveProfile:Close()
+	if self:IsShown() then
+		self:HideDialog()
 	end
 end
 
-function on_game_start()
-	RegisterScriptCallback("on_key_press", on_key_press)
-	RegisterScriptCallback("on_key_release", on_key_release)
+function UIRemoveProfile:OnKeyboard(dik, keyboard_action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	if keyboard_action == ui_events.WINDOW_KEY_PRESSED and dik == DIK_keys.DIK_ESCAPE then
+		self:Close()
+		return true
+	end
+	return res
 end
 
-function on_game_end()
-	close()
-	UnregisterScriptCallback("on_key_press", on_key_press)
-	UnregisterScriptCallback("on_key_release", on_key_release)
+------------------------------------------------------------------ attach
+
+-- Called by the main menu when it is made. Returns the panel, or nil when it
+-- could not be built (the menu then works without it).
+function attach(mm)
+	local ok, panel = pcall(function() return ProfilePanel(mm) end)
+	if not ok then
+		log("! the profile panel could not be built: %s", tostring(panel))
+		return nil
+	end
+	return panel
 end
