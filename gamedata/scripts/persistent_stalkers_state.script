@@ -1,0 +1,921 @@
+-- Persistent Stalkers: reading the character from the actor, and making the
+-- actor match a stored character (AGENTS.md, "The character").
+--
+-- read() returns the character as a table: items (each with its full state
+-- and where it sits: slot, belt), the active slot, money, rank, reputation,
+-- true faction, each faction's goodwill toward the player, needs (hunger,
+-- thirst, sleep), other mods' per-actor state (MOD_STATE), and learned
+-- crafting recipes. Health is not part of the profile: bleeding, body
+-- parts, radiation and psy health belong to the loaded save. apply() reads
+-- them off the actor first and puts them back once the profile's gear is on,
+-- so a character written while bleeding out is not what a reload comes back as.
+--
+-- apply(c, parts, done) makes the actor match c. Items are reconciled, not
+-- wiped: a carried item with the same section, upgrades and addons as a
+-- stored one is kept and gets the stored condition, uses and ammo; what is
+-- left over is released, and what is missing is created in the actor's
+-- inventory (alife_create_item: on a client xrRazom's client spawn, which the
+-- host records). Once every new item is online it gets its upgrades,
+-- condition, uses, ammo and parts (the DANTE probe's "full" method), then
+-- every item goes to its slot, the belt or the backpack, and the stats are
+-- set. Health, bleeding, body parts, radiation and psy health are the
+-- actor's at the start of the apply, put back at the end. Driven by
+-- update(), which the core calls every frame.
+--
+-- World items are never stored or touched: quest items and story documents
+-- belong to the world's tasks, not to the character (is_world_item).
+
+local CREATE_TIMEOUT = 30000 -- ms for created items to come online
+local SETTLE_DELAY = 1500 -- ms between setting item state and placing items
+
+-- Equip order: the outfit first (equipping one empties the belt and can push
+-- the helmet and backpack out), then helmet and backpack, then the rest.
+local SLOT_ORDER = { 7, 12, 13, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11 }
+local LIMBS = { "head", "torso", "leftarm", "rightarm", "leftleg", "rightleg" }
+
+-- Community goodwill: how a faction feels about this one stalker. Used when
+-- game_relations.factions_table is not loaded. How factions feel about each
+-- other is the world's and is not stored.
+local FACTIONS = { "army", "bandit", "csky", "dolg", "ecolog", "freedom", "greh", "isg", "killer", "monolith", "renegade", "stalker" }
+
+-- Other mods' per-actor state in m_data, carried whole. Each entry names the
+-- module that owns the key; applying calls that module's load_state with
+-- only this key (as xrRazom and Soulslike do for thirst and sleep), then
+-- `after` if given. A key whose module is not loaded is skipped. Keys that
+-- are world state (campfires seen, garrison anger) or keyed by object id
+-- (carried_mags) are left out on purpose.
+local MOD_STATE = {
+	-- Haruka's Skill System: skill -> level, experience. on_game_load
+	-- recomputes the bonuses from the levels.
+	{ key = "skills_levels", module = "haru_skills", after = "on_game_load" },
+}
+
+-- Skill tree (own repo, spec_core; m_data.spec_skill_tree): class, perks
+-- bought, XP unspent and ever earned, secondary craft, respecs. Its
+-- load_state is local, so it is not a MOD_STATE entry: the live table
+-- (spec_core.get_state()) is read and changed in place. These fields stay
+-- with the world: task awards already counted (xp_seen, xp_seq: a peer's
+-- record of the host's award numbers), artifacts boosted (object ids), the
+-- host's anomaly rolls. Everything else is the character's.
+local SKILL_TREE_WORLD = { xp_seen = true, xp_seq = true, boosted = true, rolled = true }
+
+local function log(fmt, ...)
+	printf("[PersistentStalkers] " .. fmt, ...)
+end
+
+local function try(f, ...)
+	local ok, v = pcall(f, ...)
+	if ok then
+		return v
+	end
+	return nil
+end
+
+local function mod(name)
+	local m = rawget(_G, name)
+	return type(m) == "table" and m or nil
+end
+
+local function copy(v, depth)
+	depth = depth or 8
+	local t = type(v)
+	if t == "number" or t == "string" or t == "boolean" then
+		return v
+	elseif t == "table" and depth > 0 then
+		local out = {}
+		for k, sub in pairs(v) do
+			local kt = type(k)
+			if kt == "number" or kt == "string" then
+				out[k] = copy(sub, depth - 1)
+			end
+		end
+		return out
+	end
+	return nil -- userdata (CTime and the like) does not travel
+end
+
+-------------------------------------------------------------------------------
+-- Reading
+
+-- Sections that stay with the world: xrRazom's own, and story and quest
+-- items (Master Core's list, master_core_world.is_story_item, the one DANTE
+-- keeps on the player).
+function is_world_item(section)
+	if not section or section:find("^xrr_") then
+		return true
+	end
+	return master_core_world.is_story_item(section)
+end
+
+-- Carried items that belong to the character.
+local function carried()
+	local list = {}
+	db.actor:iterate_inventory(function(_, obj)
+		if obj and obj:id() ~= AC_ID and not is_world_item(obj:section()) then
+			list[#list + 1] = obj
+		end
+	end, db.actor)
+	return list
+end
+
+local function slot_map()
+	local map = {}
+	for i = 1, 13 do
+		local obj = try(db.actor.item_in_slot, db.actor, i)
+		if obj then
+			map[obj:id()] = i
+		end
+	end
+	return map
+end
+
+local function belt_map()
+	local map = {}
+	local n = try(function() return db.actor:belt_count() end) or 0
+	for i = 0, n - 1 do
+		local obj = try(function() return db.actor:item_on_belt(i) end)
+		if obj then
+			map[obj:id()] = true
+		end
+	end
+	return map
+end
+
+-- Full state of one item, from its game object: Master Core
+-- (master_core_items.read, the same record as Private Backrooms' room info),
+-- plus where it sits.
+local function read_item(obj, slots, belt)
+	local id = obj:id()
+	local st = master_core_items.read(obj)
+	st.slot = slots and slots[id]
+	st.belt = belt and belt[id] or nil
+	return st
+end
+
+local function satiety()
+	return try(function() return db.actor:cast_Actor():conditions():GetSatiety() end)
+end
+
+local function read_vitals()
+	local a = db.actor
+	local v = { health = a.health, radiation = a.radiation }
+	local psy = mod("arszi_psy")
+	if psy and psy.get_psy_health then
+		v.psy = try(psy.get_psy_health)
+	end
+	local inj = mod("zzz_player_injuries")
+	if inj and type(inj.health) == "table" then
+		v.limbs, v.timed = {}, {}
+		for _, part in ipairs(LIMBS) do
+			v.limbs[part] = tonumber(inj.health[part])
+			v.timed[part] = type(inj.timedhp) == "table" and tonumber(inj.timedhp[part]) or nil
+		end
+	end
+	return v
+end
+
+-- The engine's bleeding: one wound per bone, its total size. nil when the
+-- condition object cannot be read, so a failed read is not taken for "no
+-- wounds" and the actor's bleeding is left alone.
+local function conditions()
+	local act = db.actor and try(function() return db.actor:cast_Actor() end)
+	return act and try(function() return act:conditions() end)
+end
+
+local function read_wounds()
+	local cond = conditions()
+	if not (cond and cond.WoundForEach) then
+		return nil
+	end
+	local wounds = {}
+	local ok = pcall(function()
+		cond:WoundForEach(function(w)
+			local sz = w:TotalSize()
+			local bone = w:GetBoneNum()
+			if type(sz) == "number" and sz > 0.001 and type(bone) == "number" then
+				wounds[#wounds + 1] = { bone = bone, size = sz }
+			end
+		end)
+	end)
+	if not ok then
+		return nil
+	end
+	return wounds
+end
+
+-- Health as the loaded character has it, taken before the profile's gear
+-- replaces what they carry.
+local function read_body()
+	local v = read_vitals()
+	v.wounds = read_wounds()
+	return v
+end
+
+local function read_needs()
+	local n = { satiety = satiety() }
+	local thirst = mod("actor_status_thirst")
+	if thirst and thirst.get_last_drink then
+		n.thirst = try(thirst.get_last_drink)
+	end
+	local sleep = mod("actor_status_sleep")
+	if sleep and sleep.get_last_sleep then
+		n.sleep = try(sleep.get_last_sleep)
+	end
+	return n
+end
+
+local function faction_names()
+	local gr = mod("game_relations")
+	if gr and type(gr.factions_table) == "table" and #gr.factions_table > 0 then
+		return gr.factions_table
+	end
+	return FACTIONS
+end
+
+-- The engine's goodwill is a whole number. Rounding keeps a float that
+-- wobbles from rewriting the profile on every check.
+local function whole(v)
+	if type(v) ~= "number" then
+		return nil
+	end
+	return math.floor(v + 0.5)
+end
+
+-- faction -> goodwill toward the actor, zeros included, so a faction the
+-- world has raised is set back. nil when the registry cannot be read (an
+-- older profile has no field: the world's goodwill is left, then stored).
+local function read_goodwill()
+	local reg = rawget(_G, "relation_registry")
+	if not (reg and reg.community_goodwill and db.actor) then
+		return nil
+	end
+	local id = db.actor:id()
+	local out = {}
+	for _, fac in ipairs(faction_names()) do
+		if type(fac) == "string" then
+			local v = whole(try(reg.community_goodwill, fac, id))
+			if v ~= nil then
+				out[fac] = v
+			end
+		end
+	end
+	if not next(out) then
+		return nil
+	end
+	return out
+end
+
+local function read_mod_state()
+	local m = alife_storage_manager and try(alife_storage_manager.get_state)
+	local out = {}
+	for _, e in ipairs(MOD_STATE) do
+		local owner = mod(e.module)
+		-- the module's live table when it keeps one as a global, else the
+		-- save table as last written
+		local v = owner and type(owner[e.key]) == "table" and owner[e.key] or (type(m) == "table" and m[e.key])
+		if v ~= nil and owner then
+			out[e.key] = copy(v)
+		end
+	end
+	return out
+end
+
+-- Skill tree's module, or nil when that mod is not enabled.
+local function skill_tree_mod()
+	local m = mod("spec_core")
+	return m and type(m.get_state) == "function" and m or nil
+end
+
+-- The Skill tree character (nil without the mod): its state minus the
+-- world's fields.
+local function read_skill_tree()
+	local m = skill_tree_mod()
+	local s = m and try(m.get_state)
+	if type(s) ~= "table" then
+		return nil
+	end
+	local out = {}
+	for k, v in pairs(s) do
+		if not SKILL_TREE_WORLD[k] then
+			out[k] = copy(v)
+		end
+	end
+	return out
+end
+
+-- Replaces the character's fields of Skill tree's state with the profile's,
+-- keeping the world's, then lets Skill tree catch up: migrate (an older
+-- state version), changed (effects re-applied, the perk summary sent to
+-- teammates), and the class picker when the profile has no class. A perk
+-- id this Skill tree does not know is logged; Skill tree refunds it at the
+-- next save load.
+local function apply_skill_tree(t)
+	local m = skill_tree_mod()
+	if type(t) ~= "table" or not m then
+		return
+	end
+	local s = try(m.get_state)
+	if type(s) ~= "table" then
+		return
+	end
+	for k in pairs(s) do
+		if not SKILL_TREE_WORLD[k] then
+			s[k] = nil
+		end
+	end
+	for k, v in pairs(t) do
+		if not SKILL_TREE_WORLD[k] then
+			s[k] = copy(v)
+		end
+	end
+	if m.migrate then
+		local ok, err = pcall(m.migrate, s)
+		if not ok then
+			log("! skill tree from the profile: migrate: %s", tostring(err))
+		end
+	end
+	if type(m.PERKS) == "table" and type(s.perks) == "table" then
+		for id in pairs(s.perks) do
+			if not m.PERKS[id] then
+				log("! skill tree: perk %s is not known here (refunded at the next load)", tostring(id))
+			end
+		end
+	end
+	local ok, err = pcall(m.changed)
+	if not ok then
+		log("! skill tree from the profile: %s", tostring(err))
+	end
+	if not s.class and m.notify then
+		pcall(m.notify, "no_class")
+	end
+	local xp = type(s.xp) == "table" and s.xp or {}
+	local perks = 0
+	for _ in pairs(type(s.perks) == "table" and s.perks or {}) do
+		perks = perks + 1
+	end
+	log("skill tree set: class %s, %s perks, %s general XP unspent", tostring(s.class), perks, tostring(xp.general))
+end
+
+-- Recipe sections whose encyclopedia note is unlocked (G.A.M.M.A.'s
+-- workshop: a recipe is known when "encyclopedia__notes_<recipe>" is).
+local recipe_sections
+
+local function all_recipes()
+	if not recipe_sections then
+		recipe_sections = {}
+		pcall(function()
+			ini_sys:section_for_each(function(section)
+				if section:find("^recipe_") then
+					recipe_sections[#recipe_sections + 1] = section
+				end
+			end)
+		end)
+		table.sort(recipe_sections)
+	end
+	return recipe_sections
+end
+
+local function read_recipes()
+	local enc = mod("ui_pda_encyclopedia_tab")
+	if not (enc and enc.is_unlocked_note) then
+		return nil
+	end
+	local out = {}
+	for _, r in ipairs(all_recipes()) do
+		if try(enc.is_unlocked_note, "encyclopedia__notes_" .. r) then
+			out[#out + 1] = r
+		end
+	end
+	return out
+end
+
+local function true_faction()
+	local dis = mod("gameplay_disguise")
+	local comm = dis and dis.get_default_comm and try(dis.get_default_comm)
+	if not comm then
+		comm = try(function() return db.actor:character_community() end)
+		comm = comm and comm:gsub("^actor_", "")
+	end
+	return comm
+end
+
+function read()
+	local a = db.actor
+	local slots, belt = slot_map(), belt_map()
+	local items = {}
+	for _, obj in ipairs(carried()) do
+		items[#items + 1] = read_item(obj, slots, belt)
+	end
+	return {
+		items = items,
+		active = try(function() return a:active_slot() end),
+		money = try(function() return a:money() end),
+		rank = try(function() return a:character_rank() end),
+		reputation = try(function() return a:character_reputation() end),
+		faction = true_faction(),
+		goodwill = read_goodwill(),
+		needs = read_needs(),
+		mod_state = read_mod_state(),
+		skill_tree = read_skill_tree(),
+		recipes = read_recipes(),
+	}
+end
+
+-------------------------------------------------------------------------------
+-- Applying: matching items
+
+local function item_key(st)
+	local ups = {}
+	for _, u in ipairs(st.upgrades or {}) do
+		ups[#ups + 1] = u
+	end
+	table.sort(ups)
+	return string.format("%s|%s|%s", st.section, table.concat(ups, ","), tostring(st.addons or 0))
+end
+
+-- Pairs stored items with carried ones of the same key, nearest condition
+-- first. Returns keep (list of { rec, id }), release (ids), create (recs).
+local function plan(target_items)
+	local have = {}
+	for _, obj in ipairs(carried()) do
+		local st = read_item(obj)
+		local k = item_key(st)
+		have[k] = have[k] or {}
+		table.insert(have[k], { id = obj:id(), cond = st.cond or 1 })
+	end
+	local keep, create = {}, {}
+	for _, rec in ipairs(target_items) do
+		local list = have[item_key(rec)]
+		local best, best_d
+		for i, h in ipairs(list or {}) do
+			local d = math.abs((h.cond or 1) - (rec.cond or 1))
+			if not best_d or d < best_d then
+				best, best_d = i, d
+			end
+		end
+		if best then
+			keep[#keep + 1] = { rec = rec, id = list[best].id }
+			table.remove(list, best)
+		elseif rec.section and ini_sys:section_exist(rec.section) then
+			create[#create + 1] = rec
+		else
+			log("! no section %s: item kept in the profile, not created", tostring(rec.section))
+		end
+	end
+	local release = {}
+	for _, list in pairs(have) do
+		for _, h in ipairs(list) do
+			release[#release + 1] = h.id
+		end
+	end
+	return keep, release, create
+end
+
+-- Every item, kept or new, is finished by Master Core (master_core_items):
+-- condition, uses, ammo, magazine, Mags Redux data, upgrades on a new one,
+-- part conditions a second later, and on a new weapon the silencer and
+-- launcher it came online without, made in the backpack and attached
+-- (always on a client, whose packet does not reach the host). An entry is
+-- done when the core calls back.
+local function finish_opts(e, report)
+	return {
+		tag = "[PersistentStalkers]",
+		new = e.new,
+		wait = CREATE_TIMEOUT,
+		attach = e.new,
+		done = function(id, ok)
+			e.done = true
+			if not ok then
+				report.missing = report.missing + 1
+			end
+		end,
+	}
+end
+
+-------------------------------------------------------------------------------
+-- Applying: the run
+
+local run -- the apply in progress
+
+function busy()
+	return run ~= nil
+end
+
+local function vital(name, target)
+	-- The actor's property setters may add (CActor::Change*) or set; assign
+	-- the difference, then the value itself if that did not land.
+	local a = db.actor
+	local cur = try(function() return a[name] end)
+	if type(cur) ~= "number" or type(target) ~= "number" then
+		return
+	end
+	pcall(function() a[name] = target - cur end)
+	local now = try(function() return a[name] end)
+	if type(now) == "number" and math.abs(now - target) > 0.01 then
+		pcall(function() a[name] = target end)
+	end
+end
+
+-- Restores the wound sizes read at the start of the apply. AddWound
+-- randomizes a new wound's size, so it is opened at 0 and AddHit sets the
+-- total (the same way xrRazom puts a peer's wounds back). Bleeding speed is
+-- that total, so one hit type is enough.
+local function apply_wounds(list)
+	if type(list) ~= "table" then
+		return
+	end
+	local cond = conditions()
+	if not (cond and cond.ClearWounds and cond.AddWound and hit and hit.wound) then
+		return
+	end
+	pcall(function()
+		cond:ClearWounds()
+		for _, w in ipairs(list) do
+			local bone = w.bone or 0
+			if bone >= 64 then
+				bone = 0
+			end
+			local wound = cond:AddWound(0, hit.wound, bone)
+			if wound and w.size and w.size > 0 then
+				wound:AddHit(w.size, hit.wound)
+			end
+		end
+	end)
+end
+
+local function apply_vitals(v)
+	if type(v) ~= "table" then
+		return
+	end
+	apply_wounds(v.wounds)
+	local inj = mod("zzz_player_injuries")
+	if v.limbs and inj and type(inj.health) == "table" then
+		for _, part in ipairs(LIMBS) do
+			local hp = v.limbs[part]
+			if hp then
+				local t = v.timed and v.timed[part] or 0
+				inj.health[part] = hp
+				if type(inj.timedhp) == "table" then inj.timedhp[part] = t end
+				if utils_obj and utils_obj.save_var then
+					utils_obj.save_var(db.actor, "health." .. part, hp)
+					utils_obj.save_var(db.actor, "timedhp." .. part, t)
+				end
+			end
+		end
+	end
+	local psy = mod("arszi_psy")
+	if v.psy and psy and psy.set_psy_health then
+		pcall(psy.set_psy_health, v.psy)
+	end
+	vital("radiation", v.radiation)
+	if v.health and db.actor.set_health_ex then
+		pcall(function() db.actor:set_health_ex(v.health) end)
+	end
+end
+
+local function apply_needs(n)
+	if type(n) ~= "table" then
+		return
+	end
+	local thirst = mod("actor_status_thirst")
+	if n.thirst and thirst and thirst.load_state then
+		pcall(thirst.load_state, { drink = { last_drink = n.thirst } })
+	end
+	local sleep = mod("actor_status_sleep")
+	if n.sleep and sleep and sleep.load_state then
+		pcall(sleep.load_state, { sleep = { last_sleep = n.sleep } })
+	end
+	local cur = satiety()
+	if n.satiety and cur then
+		pcall(function() db.actor:change_satiety(n.satiety - cur) end)
+	end
+end
+
+local function apply_mod_state(ms)
+	if type(ms) ~= "table" then
+		return
+	end
+	for _, e in ipairs(MOD_STATE) do
+		local v = ms[e.key]
+		local owner = mod(e.module)
+		if v ~= nil and owner and owner.load_state then
+			local ok, err = pcall(owner.load_state, { [e.key] = copy(v) })
+			if ok and e.after and owner[e.after] then
+				ok, err = pcall(owner[e.after])
+			end
+			if not ok then
+				log("! %s from the profile: %s", e.key, tostring(err))
+			end
+		end
+	end
+end
+
+local function apply_recipes(list)
+	local enc = mod("ui_pda_encyclopedia_tab")
+	if type(list) ~= "table" or not (enc and enc.is_unlocked_note and enc.unlock_note) then
+		return 0
+	end
+	local n = 0
+	for _, r in ipairs(list) do
+		local note = "encyclopedia__notes_" .. r
+		if not try(enc.is_unlocked_note, note) and pcall(enc.unlock_note, note) then
+			n = n + 1
+		end
+	end
+	return n
+end
+
+-- Sets each stored faction's goodwill toward the actor. set, not
+-- inc_faction_goodwill_to_actor: that also shifts a random enemy and a
+-- random ally, which would move the other numbers off the profile.
+local function apply_goodwill(g)
+	local reg = rawget(_G, "relation_registry")
+	if type(g) ~= "table" or not (reg and reg.set_community_goodwill and reg.community_goodwill and db.actor) then
+		return
+	end
+	local id = db.actor:id()
+	local changed = {}
+	for fac, amount in pairs(g) do
+		amount = whole(amount)
+		if type(fac) == "string" and amount ~= nil then
+			local cur = whole(try(reg.community_goodwill, fac, id))
+			if cur ~= amount and pcall(reg.set_community_goodwill, fac, id, amount) then
+				changed[#changed + 1] = string.format("%s %s", fac, amount)
+			end
+		end
+	end
+	if #changed > 0 then
+		table.sort(changed)
+		log("goodwill set: %s", table.concat(changed, ", "))
+	end
+end
+
+local function apply_faction(comm)
+	if type(comm) ~= "string" or comm == "" or comm == true_faction() then
+		return
+	end
+	local dis = mod("gameplay_disguise")
+	if dis and dis.update_default then
+		-- G.A.M.M.A.'s true faction: both of its stores, and the community
+		-- itself unless a disguise is on
+		pcall(dis.update_default, comm, true)
+	else
+		pcall(function() db.actor:set_character_community("actor_" .. comm, 0, 0) end)
+	end
+	log("faction set to %s", comm)
+end
+
+local function apply_stats(c, parts, report)
+	local a = db.actor
+	if parts.money and c.money then
+		local cur = try(function() return a:money() end)
+		if cur and cur ~= c.money then
+			pcall(function() a:give_money(c.money - cur) end)
+		end
+	end
+	if parts.rank then
+		if c.rank then pcall(function() a:set_character_rank(c.rank) end) end
+		if c.reputation then pcall(function() a:set_character_reputation(c.reputation) end) end
+	end
+	if parts.goodwill then
+		apply_goodwill(c.goodwill)
+	end
+	if parts.faction then
+		apply_faction(c.faction)
+	end
+	if parts.needs then
+		apply_needs(c.needs)
+	end
+	if parts.mod_state then
+		apply_mod_state(c.mod_state)
+	end
+	if parts.skill_tree then
+		apply_skill_tree(c.skill_tree)
+	end
+	if parts.recipes then
+		report.recipes = apply_recipes(c.recipes)
+	end
+end
+
+-- Slots, belt, backpack, then the active slot.
+local function place(entries)
+	local a = db.actor
+	local by_slot, belt, ruck = {}, {}, {}
+	for _, e in ipairs(entries) do
+		local obj = level.object_by_id(e.id)
+		if obj and obj:parent() and obj:parent():id() == AC_ID then
+			if e.rec.slot then
+				by_slot[e.rec.slot] = obj
+			elseif e.rec.belt then
+				belt[#belt + 1] = obj
+			else
+				ruck[#ruck + 1] = obj
+			end
+		end
+	end
+	local slots, on_belt = slot_map(), belt_map()
+	for _, obj in ipairs(ruck) do
+		if slots[obj:id()] or on_belt[obj:id()] then
+			pcall(function() a:move_to_ruck(obj) end)
+		end
+	end
+	for _, s in ipairs(SLOT_ORDER) do
+		local obj = by_slot[s]
+		if obj then
+			local there = try(a.item_in_slot, a, s)
+			if not (there and there:id() == obj:id()) then
+				if there then
+					pcall(function() a:move_to_ruck(there) end)
+				end
+				pcall(function() a:move_to_slot(obj, s, true) end)
+			end
+		end
+	end
+	on_belt = belt_map()
+	for _, obj in ipairs(belt) do
+		if not on_belt[obj:id()] then
+			pcall(function() a:move_to_belt(obj) end)
+		end
+	end
+end
+
+local function placed_wrong(entries)
+	local slots, belt = slot_map(), belt_map()
+	local wrong = 0
+	for _, e in ipairs(entries) do
+		if e.rec.slot and slots[e.id] ~= e.rec.slot then
+			wrong = wrong + 1
+		elseif e.rec.belt and not belt[e.id] then
+			wrong = wrong + 1
+		end
+	end
+	return wrong
+end
+
+-- Starts making the actor match character c. parts: which of money, rank,
+-- goodwill, faction, needs, mod_state, recipes to set (items always). Health,
+-- bleeding, body parts, radiation and psy health are read from the actor now
+-- and put back when the apply finishes.
+-- done(report) runs once it is finished: report = { kept, released,
+-- refused, created, missing, misplaced, recipes }.
+function apply(c, parts, done)
+	if run then
+		log("! an apply is already running")
+		return false
+	end
+	local body = read_body()
+	local keep, release, create = plan(type(c.items) == "table" and c.items or {})
+	local report = { kept = #keep, released = 0, refused = 0, created = 0, missing = 0, misplaced = 0 }
+	for _, id in ipairs(release) do
+		local se = alife_object(id)
+		local ok, res = pcall(alife_release_id, id)
+		if ok and res ~= false then
+			report.released = report.released + 1
+		else
+			report.refused = report.refused + 1
+			log("! could not release %s (%s)", se and se:section_name() or "?", tostring(id))
+		end
+	end
+	local entries = {}
+	for _, k in ipairs(keep) do
+		local e = { id = k.id, rec = k.rec, new = false }
+		entries[#entries + 1] = e
+		master_core_items.queue(k.id, k.rec, finish_opts(e, report))
+	end
+	for _, rec in ipairs(create) do
+		-- Mags Redux data and the packet (addons, ammo type, condition,
+		-- upgrades) are written before the item is online; the packet only
+		-- outside a session (a client's packet does not reach the host).
+		local e = { rec = rec, new = true }
+		local opts = finish_opts(e, report)
+		opts.packet = not session_active()
+		local se = master_core_items.create(rec, db.actor, opts)
+		if se then
+			e.id = se.id
+			entries[#entries + 1] = e
+			report.created = report.created + 1
+		else
+			report.missing = report.missing + 1
+			log("! could not create %s", rec.section)
+		end
+	end
+	run = { c = c, parts = parts or {}, done = done, report = report, entries = entries, body = body,
+		step = "items", until_t = time_global() + CREATE_TIMEOUT }
+	local wounds = body.wounds and tostring(#body.wounds) or "unread"
+	log("applying: %s kept, %s released (%s refused), %s created; health %s and %s wounds kept from the loaded character",
+		report.kept, report.released, report.refused, report.created, tostring(body.health), wounds)
+	return true
+end
+
+function session_active()
+	return master_core_net.session()
+end
+
+local function finish()
+	local r = run
+	run = nil
+	log("applied: %s kept, %s released, %s created, %s missing, %s misplaced, %s recipes", r.report.kept,
+		r.report.released, r.report.created, r.report.missing, r.report.misplaced, tostring(r.report.recipes or 0))
+	if r.done then
+		local ok, err = pcall(r.done, r.report)
+		if not ok then
+			log("! after the apply: %s", tostring(err))
+		end
+	end
+end
+
+function update()
+	if not (run and db.actor) then
+		return
+	end
+	local now = time_global()
+	if run.step == "items" then
+		local waiting = 0
+		for _, e in ipairs(run.entries) do
+			if not e.done then
+				waiting = waiting + 1
+			end
+		end
+		if waiting == 0 or now > run.until_t then
+			if waiting > 0 then
+				log("! %s items were not finished in time", waiting)
+				run.report.missing = run.report.missing + waiting
+				for _, e in ipairs(run.entries) do
+					if not e.done then
+						master_core_items.forget(e.id)
+					end
+				end
+			end
+			run.step = "place"
+			run.at = now + SETTLE_DELAY
+		end
+	elseif run.step == "place" and now >= run.at then
+		place(run.entries)
+		run.step = "check"
+		run.at = now + 1000
+	elseif run.step == "check" and now >= run.at then
+		if placed_wrong(run.entries) > 0 and not run.placed_twice then
+			run.placed_twice = true
+			place(run.entries)
+			run.at = now + 1000
+			return
+		end
+		run.report.misplaced = placed_wrong(run.entries)
+		if run.c.active then
+			pcall(function() db.actor:activate_slot(run.c.active) end)
+		end
+		apply_stats(run.c, run.parts, run.report)
+		apply_vitals(run.body)
+		finish()
+	end
+end
+
+-- Drops an apply in progress (a map change, the game ending).
+function cancel()
+	if run then
+		log("apply cancelled at step %s", run.step)
+		for _, e in ipairs(run.entries or {}) do
+			if e.id and not e.done then
+				master_core_items.forget(e.id)
+			end
+		end
+	end
+	run = nil
+end
+
+-- Non-zero faction goodwill, for status(). nil when the character has no
+-- goodwill field yet.
+local function goodwill_line(g)
+	if type(g) ~= "table" then
+		return nil
+	end
+	local keys = {}
+	for k, v in pairs(g) do
+		if type(k) == "string" and type(v) == "number" and v ~= 0 then
+			keys[#keys + 1] = k
+		end
+	end
+	table.sort(keys)
+	if #keys == 0 then
+		return "goodwill 0"
+	end
+	local parts = {}
+	for _, k in ipairs(keys) do
+		parts[#parts + 1] = string.format("%s %+d", k, g[k])
+	end
+	return "goodwill " .. table.concat(parts, ", ")
+end
+
+-- A short line for status(): what the character holds.
+function summary(c)
+	if type(c) ~= "table" then
+		return "none"
+	end
+	local line = string.format("%s items, %s RU, rank %s, rep %s, %s", type(c.items) == "table" and #c.items or 0,
+		tostring(c.money), tostring(c.rank), tostring(c.reputation), tostring(c.faction))
+	local gw = goodwill_line(c.goodwill)
+	if gw then
+		line = line .. ", " .. gw
+	end
+	return line
+end

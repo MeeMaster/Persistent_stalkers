@@ -1,0 +1,406 @@
+-- Persistent Stalkers: character profiles on this machine (AGENTS.md,
+-- "Profiles").
+--
+-- A profile is one character: what it carries and where (slots, belt), its
+-- money, rank, reputation, faction goodwill, hunger, thirst, sleep, and
+-- other per-actor state (persistent_stalkers_state.script). Profiles are named and chosen in
+-- the profile menu (persistent_stalkers_menu.script); MCM can create and
+-- remove them. The choice is this machine's, not the save's. Profiles do not
+-- depend on the nickname.
+--   the choice: $app_data_root$\persistent_stalkers_selected.txt
+--   a profile:  $app_data_root$\persistent_stalkers_profile_<profile>.txt
+--   snapshots:  $app_data_root$\persistent_stalkers_profile_<profile>.saves.txt
+--   the list:   $app_data_root$\persistent_stalkers_profiles.txt
+-- Snapshots are the "character follows the save" mode's copies of the
+-- character per save key (a client has no save of its own).
+-- The game's Lua cannot delete or rename files (no os.remove / os.rename), so
+-- a write puts the whole text in <file>.tmp first, then in <file>: if either
+-- write is cut short, the other is whole. Removing a profile copies its file
+-- to ...<profile>.removed-<time>.txt, empties it, and takes it off the list.
+
+NONE = "none" -- "None": no profile at all, regular saves (never a file)
+
+local FILE_VERSION = 1
+local SNAPSHOTS_KEPT = 40 -- save keys kept per profile, newest first
+local SHRINK_BACKUPS = 3 -- .bak1 .. .bakN, see write_character
+-- Character fields read only when their mod is enabled (Skill tree): a
+-- write without one keeps the stored one (write_character).
+local KEEP_WHEN_ABSENT = { "skill_tree" }
+
+local profile_in_use -- nil: the selected one (selected_profile)
+local data -- the active profile's file, as a table
+local saves -- the active profile's snapshots file, as a table
+
+local function log(fmt, ...)
+	printf("[PersistentStalkers] " .. fmt, ...)
+end
+
+-------------------------------------------------------------------------------
+-- Data and files: Master Core (master_core_text). encode / decode stay here
+-- for the other modules and the events (profile().encode).
+
+function encode(v)
+	return master_core_text.encode(v)
+end
+
+function decode(s)
+	return master_core_text.decode(s)
+end
+
+local function app_path(file)
+	return master_core_text.app_path(file)
+end
+
+local function profile_path(profile)
+	return app_path("persistent_stalkers_profile_" .. profile .. ".txt")
+end
+
+local function saves_path(profile)
+	return app_path("persistent_stalkers_profile_" .. profile .. ".saves.txt")
+end
+
+local function index_path()
+	return app_path("persistent_stalkers_profiles.txt")
+end
+
+function valid_profile_name(name)
+	return master_core_profiles.valid_name(name)
+end
+
+local function read_file(path)
+	return master_core_text.read_file(path)
+end
+
+local function write_file(path, text)
+	return master_core_text.write_file(path, text)
+end
+
+-- <file>, else <file>.tmp. A file that cannot be read is copied to .bad.
+local function read_table(path)
+	return master_core_text.read_table(path, "[PersistentStalkers]")
+end
+
+local function write_table(path, t)
+	return master_core_text.write_table(path, t, "[PersistentStalkers]")
+end
+
+-------------------------------------------------------------------------------
+-- Profile list: Master Core (master_core_profiles), with this spec.
+
+local function empty()
+	return { version = FILE_VERSION, revision = 0 }
+end
+
+local SPEC = {
+	tag = "[PersistentStalkers]",
+	none = NONE,
+	path = profile_path,
+	index = index_path,
+	files = function(name) return { profile_path(name), saves_path(name) } end,
+	current = function() return current_profile() end,
+	empty = empty,
+	has_content = function(t) return type(t.character) == "table" end,
+	created = "Created %s (empty: it takes the character you have when you first choose it). Choose it in the profile menu.",
+	kept = " Its character is kept in %s",
+}
+
+function profile_spec()
+	return SPEC
+end
+
+function profiles()
+	return master_core_profiles.list(SPEC)
+end
+
+function has_profile(name)
+	return master_core_profiles.has(SPEC, name)
+end
+
+-- The selection: the profile last chosen in the profile menu, which the next
+-- game starts from. Kept in $app_data_root$\persistent_stalkers_selected.txt
+-- ({ profile = name }). Until 2026-11-11 it was MCM's
+-- "persistent_stalkers/active"; that value is read once when the file is not
+-- there yet (straight from axr_options: MCM's get refuses a key with no
+-- option on the page).
+local selected -- the file's value, read once
+
+local function selected_path()
+	return app_path("persistent_stalkers_selected.txt")
+end
+
+local function old_mcm_selection()
+	local ok, v = pcall(function()
+		return axr_main.config:r_value("mcm", "persistent_stalkers/active", 0)
+	end)
+	return ok and type(v) == "string" and v ~= "" and v or nil
+end
+
+local function read_selected()
+	if selected == nil then
+		local t = read_table(selected_path())
+		local v = type(t) == "table" and type(t.profile) == "string" and t.profile or nil
+		selected = v or old_mcm_selection() or false
+	end
+	return selected or nil
+end
+
+-- The selected profile if it exists, else default. NONE for None.
+function selected_profile()
+	local v = read_selected()
+	if v == NONE then
+		return NONE
+	end
+	if valid_profile_name(v) and has_profile(v) then
+		return v
+	end
+	return "default"
+end
+
+-- Remembers the profile chosen in the profile menu for the next game.
+function set_selected(name)
+	if name ~= NONE and not valid_profile_name(name) then
+		return false
+	end
+	if selected == name then
+		return true
+	end
+	selected = name
+	return write_table(selected_path(), { profile = name }) and true or false
+end
+
+function current_profile()
+	return profile_in_use or selected_profile()
+end
+
+-- Fixes the profile in use for this game (on each map's first update); only
+-- the profile menu (use_profile) changes it after that.
+function pin()
+	if not profile_in_use then
+		profile_in_use = selected_profile()
+	end
+end
+
+-- Switches the file in use. The caller (persistent_stalkers.run_pick)
+-- writes the old one first and applies the new one.
+function use_profile(name)
+	profile_in_use = name
+	data = nil
+	saves = nil
+end
+
+function path()
+	return profile_path(current_profile())
+end
+
+-- Returns ok, message.
+function create_profile(name)
+	return master_core_profiles.create(SPEC, name)
+end
+
+-- Removing needs the name typed again, and never takes the active profile.
+-- The files are kept as a backup. Returns ok, message.
+function remove_profile(name, confirm)
+	return master_core_profiles.remove(SPEC, name, confirm)
+end
+
+-------------------------------------------------------------------------------
+-- The character
+
+local function load()
+	if not data then
+		data = read_table(path()) or empty()
+		data.revision = tonumber(data.revision) or 0
+	end
+	return data
+end
+
+-- The stored character, or nil for a profile that has none yet.
+function character()
+	local c = load().character
+	return type(c) == "table" and c or nil
+end
+
+function revision()
+	return load().revision
+end
+
+local function item_count(c)
+	return type(c) == "table" and type(c.items) == "table" and #c.items or 0
+end
+
+-- Any listed profile's file, for the profile menu: { character (or nil),
+-- revision, written }. nil for None or a name not on the list.
+function info(name)
+	if name == NONE or not has_profile(name) then
+		return nil
+	end
+	local t = name == current_profile() and load() or read_table(profile_path(name))
+	t = type(t) == "table" and t or {}
+	return {
+		character = type(t.character) == "table" and t.character or nil,
+		revision = tonumber(t.revision) or 0,
+		written = tonumber(t.written),
+	}
+end
+
+function character_of(name)
+	local i = info(name)
+	return i and i.character
+end
+
+-- Copies the active profile's file to .bak1 (older ones move to .bak2,
+-- .bak3). Returns true when there was a file to keep.
+function keep_backup()
+	if current_profile() == NONE then
+		return false
+	end
+	local p = path()
+	local cur = read_file(p)
+	if not (cur and cur ~= "") then
+		return false
+	end
+	for i = SHRINK_BACKUPS, 2, -1 do
+		local prev = read_file(p .. ".bak" .. (i - 1))
+		if prev and prev ~= "" then
+			write_file(p .. ".bak" .. i, prev)
+		end
+	end
+	return write_file(p .. ".bak1", cur) and true or false
+end
+
+-- Writes the character when it differs from the stored one. Returns true
+-- when the file was written. A write that loses more than half of the items
+-- (of at least 6) first keeps the old file as .bak1 (older ones move to
+-- .bak2, .bak3): a wrong read can then be undone by hand.
+function write_character(c, why)
+	local d = load()
+	local old = d.character
+	-- Parts read only when their mod is enabled: played without it, the
+	-- character has none, and the profile keeps the stored one.
+	for _, k in ipairs(KEEP_WHEN_ABSENT) do
+		if c[k] == nil and type(old) == "table" and old[k] ~= nil then
+			c[k] = old[k]
+		end
+	end
+	if old and encode(old) == encode(c) then
+		return false
+	end
+	local before, after = item_count(old), item_count(c)
+	if before >= 6 and after * 2 < before and keep_backup() then
+		log("%s: %s items -> %s; the old file is kept as %s.bak1", current_profile(), before, after, path())
+	end
+	d.character = c
+	d.revision = d.revision + 1
+	d.written = os.time()
+	d.version = FILE_VERSION
+	if not write_table(path(), d) then
+		return false
+	end
+	log("%s written (revision %s, %s items%s)", current_profile(), d.revision, after, why and (", " .. why) or "")
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- Snapshots per save key ("character follows the save", on a client)
+
+local function load_saves()
+	if not saves then
+		saves = read_table(saves_path(current_profile())) or { version = FILE_VERSION, order = {}, by_key = {} }
+		saves.order = type(saves.order) == "table" and saves.order or {}
+		saves.by_key = type(saves.by_key) == "table" and saves.by_key or {}
+	end
+	return saves
+end
+
+function snapshot(key)
+	local s = load_saves().by_key[key]
+	return type(s) == "table" and type(s.character) == "table" and s.character or nil
+end
+
+function store_snapshot(key, c)
+	local s = load_saves()
+	s.by_key[key] = { character = c, t = os.time() }
+	local order = { key }
+	for _, k in ipairs(s.order) do
+		if k ~= key then
+			order[#order + 1] = k
+		end
+	end
+	for i = #order, SNAPSHOTS_KEPT + 1, -1 do
+		s.by_key[order[i]] = nil
+		order[i] = nil
+	end
+	s.order = order
+	local ok = write_table(saves_path(current_profile()), s)
+	if ok then
+		log("%s: snapshot for save %s (%s items, %s kept)", current_profile(), key, item_count(c), #order)
+	end
+	return ok
+end
+
+function snapshot_count()
+	return #load_saves().order
+end
+
+-------------------------------------------------------------------------------
+-- Which profile each host save was played with, on a client (a client has no
+-- save to keep it in): $app_data_root$\persistent_stalkers_worlds.txt,
+-- { order = { newest key first }, by_key = { [key] = profile or NONE } }.
+-- The arrival asks only when the loaded save's entry is not the selected
+-- profile.
+
+local WORLDS_KEPT = 100
+local worlds
+
+local function worlds_path()
+	return app_path("persistent_stalkers_worlds.txt")
+end
+
+local function load_worlds()
+	if not worlds then
+		worlds = read_table(worlds_path()) or {}
+		worlds.order = type(worlds.order) == "table" and worlds.order or {}
+		worlds.by_key = type(worlds.by_key) == "table" and worlds.by_key or {}
+	end
+	return worlds
+end
+
+function world_profile(key)
+	local v = key and load_worlds().by_key[key]
+	return type(v) == "string" and v or nil
+end
+
+function set_world_profile(key, name)
+	local w = load_worlds()
+	if w.by_key[key] == name and w.order[1] == key then
+		return true
+	end
+	w.by_key[key] = name
+	local order = { key }
+	for _, k in ipairs(w.order) do
+		if k ~= key then
+			order[#order + 1] = k
+		end
+	end
+	for i = #order, WORLDS_KEPT + 1, -1 do
+		w.by_key[order[i]] = nil
+		order[i] = nil
+	end
+	w.order = order
+	return write_table(worlds_path(), w)
+end
+
+-------------------------------------------------------------------------------
+
+-- Carried over by persistent_stalkers_dev.reload().
+function get_state()
+	return { profile_in_use = profile_in_use, data = data, saves = saves, worlds = worlds, selected = selected }
+end
+
+function set_state(s)
+	profile_in_use = s.profile_in_use
+	selected = s.selected
+	data = s.data
+	saves = s.saves
+	worlds = s.worlds
+end

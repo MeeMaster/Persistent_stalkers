@@ -1,0 +1,785 @@
+-- Persistent Stalkers: the profile menu (AGENTS.md, "Profile menu").
+--
+-- Left: the profiles, None first ("this save's character" on arrival, "your
+-- current character" when switching), and a box to make a new profile from
+-- the character you have. Right: the chosen row's character, read only: its
+-- name and stats, then its loadout: the equipment column exactly as
+-- G.A.M.M.A.'s inventory lays it out (its background, slot cells, condition
+-- bars and blockers, scaled down), the backpack as a grid of icons beside
+-- it, the game's item card on hover. Below: what choosing it does, and the
+-- button.
+--
+--   open("arrival")  after a load whose save was not played with the selected
+--                    profile. It cannot be closed without a choice.
+--   open("switch")   the menu key (MCM, F8 by default) or MCM's button, while
+--                    playing. Closed with Esc, the key or Close.
+--
+-- A choice goes to persistent_stalkers.pick(name, how) and runs on the next
+-- update, after the menu is closed. In solo the game can be paused while the
+-- menu is open (MCM "pause_menu", off by default: untested).
+--
+-- Icons are each item's inv_grid_* cell of its icons_texture, 50 px a cell.
+-- The window is 1024x768 units stretched to the screen: on 16:9 a unit is
+-- wider than tall, so widths are multiplied by utils_xml.screen_ratio() to
+-- keep icons their shape.
+
+local XML_FILE = "ui_persistent_stalkers.xml"
+local ROWS = 15 -- profile rows shown at once; the arrows page through more
+local ICON_PX = 50 -- pixels a grid cell in the icon textures
+local BAG_CELLS = { 30, 26, 22, 18, 15, 12, 10 } -- backpack cell heights tried, largest that fits
+-- The equipment column as G.A.M.M.A.'s inventory has it (G.A.M.M.A. UI's
+-- ui_inventory_16.xml, "equipment", used at every aspect ratio): 273 x 768
+-- of its units, which are already narrowed for 16:9 (ratio 0.75), over the
+-- background ui_inGame2_inventory_back. Shown from the top down to below the
+-- belt (crop), scaled to the panel's height.
+local INV = { w = 273, h = 768, crop = 566, ratio = 0.75 }
+
+-- Slot cells (cont_equ): slot, x, y, w, h, then the condition bar's x, y, w
+-- inside the cell (nil: none), and whether the icon is turned 90 degrees
+-- (the pistol and rifle cells). G.A.M.M.A. slots: 1 knife, 2 pistol,
+-- 3 rifle, 4 grenade, 5 binoculars, 6 bolt, 7 outfit, 8 PDA, 9 detector,
+-- 10 torch, 12 helmet, 13 backpack. 11 (artefact) is off screen there:
+-- what it holds is shown in the backpack.
+local EQUIP = {
+	{ 1, 10, 376, 73, 36, 13, 40, 48 },
+	{ 2, 8, 74, 76, 233, 13, 234, 48, true },
+	{ 3, 187, 74, 78, 233, 14, 234, 48, true },
+	{ 4, 51, 323, 33, 41 },
+	{ 5, 10, 11, 73, 47, 16, 49, 48 },
+	{ 6, 10, 323, 33, 41 },
+	{ 7, 91, 132, 89, 173, 19, 176, 48 },
+	{ 8, 190, 322, 73, 36, 11, 40, 48 },
+	{ 9, 190, 376, 73, 36, 11, 40, 48 },
+	{ 10, 190, 11, 73, 47, 11, 49, 48 },
+	{ 12, 91, 11, 89, 104, 19, 107, 48 },
+	{ 13, 91, 322, 89, 91, 19, 93, 48 },
+}
+-- Shown over the helmet and backpack cells when the outfit has no room for one.
+local SLOT_BLOCKERS = { [12] = { 90, 10, 91, 115 }, [13] = { 90, 320, 91, 103 } }
+-- The belt (cont_belt at y 510): five cells 33 x 41, a blocker over each
+-- one the outfit does not open.
+local BELT_Y = 510
+local BELT_X = { 16, 68, 120, 172, 224 }
+local BELT_W, BELT_H = 33, 41
+local BELT_BLOCKER = { -9, -10, 48, 61 } -- x, y from the cell, w, h
+local BAR_H = 6
+
+local CLR_TITLE = { 235, 200, 75 }
+local CLR_ROW = { 225, 220, 200 }
+local CLR_ROW_ON = { 235, 200, 75 }
+local CLR_ROW_DIM = { 150, 150, 140 }
+
+local function core()
+	return rawget(_G, "persistent_stalkers") or persistent_stalkers
+end
+
+local function profile()
+	return rawget(_G, "persistent_stalkers_profile") or persistent_stalkers_profile
+end
+
+local function state()
+	return rawget(_G, "persistent_stalkers_state") or persistent_stalkers_state
+end
+
+local function log(fmt, ...)
+	printf("[PersistentStalkers] " .. fmt, ...)
+end
+
+-- Window code runs from engine events; an error is logged instead of lost.
+local function guard(what, fn, ...)
+	local ok, err = pcall(fn, ...)
+	if not ok then
+		log("! menu %s failed: %s", what, tostring(err))
+	end
+	return ok, err
+end
+
+local function color(t, a)
+	return GetARGB(a or 255, t[1], t[2], t[3])
+end
+
+local function at(wnd, x, y, w, h)
+	wnd:SetWndPos(vector2():set(x, y))
+	if w then
+		wnd:SetWndSize(vector2():set(w, h))
+	end
+end
+
+-- Width of one screen pixel in window units over its height (0.75 on 16:9).
+local function unit_ratio()
+	local ok, r = pcall(utils_xml.screen_ratio)
+	return ok and type(r) == "number" and r > 0 and r or 1
+end
+
+local function menu_key()
+	local k = tonumber(core().setting("menu_key"))
+	return k or (DIK_keys and DIK_keys.DIK_F8)
+end
+
+local function section_ok(sec)
+	return type(sec) == "string" and ini_sys:section_exist(sec)
+end
+
+local function grid_size(sec)
+	return math.max(1, ini_sys:r_float_ex(sec, "inv_grid_width") or 1), math.max(1, ini_sys:r_float_ex(sec, "inv_grid_height") or 1)
+end
+
+-- Artefact slots a stored outfit opens: its artefact_count, plus what its
+-- upgrades add (an upgrade's property section, "section", adds its own).
+local function artefact_slots(it)
+	local n = 0
+	pcall(function()
+		n = ini_sys:r_float_ex(it.section, "artefact_count") or 0
+		for _, u in ipairs(type(it.upgrades) == "table" and it.upgrades or {}) do
+			local prop = section_ok(u) and ini_sys:r_string_ex(u, "section")
+			if prop and section_ok(prop) then
+				n = n + (ini_sys:r_float_ex(prop, "artefact_count") or 0)
+			end
+		end
+	end)
+	return math.max(0, math.min(#BELT_X, math.floor(n)))
+end
+
+-- Whether a stored outfit leaves room for a helmet and a backpack (the
+-- engine's helmet_avaliable / backpack_avaliable, true when not given).
+local function outfit_room(it)
+	if not (it and section_ok(it.section)) then
+		return true, true
+	end
+	local ok, helm, bkpk = pcall(function()
+		return ini_sys:r_bool_ex(it.section, "helmet_avaliable", true), ini_sys:r_bool_ex(it.section, "backpack_avaliable", true)
+	end)
+	if not ok then
+		return true, true
+	end
+	return helm ~= false, bkpk ~= false
+end
+
+------------------------------------------------------------------ the window
+
+GUI = nil
+local closed_by_key = false -- the key closed the menu: its release must not open it again
+
+class "UIProfileMenu" (CUIScriptWnd)
+
+function UIProfileMenu:__init(how) super()
+	self.how = how -- "arrival" or "switch"
+	self.first = 1 -- the first profile row shown
+	self.rows = {}
+	self.cells = {} -- { wnd, sec } of the shown loadout, for the hover card
+	self.R = unit_ratio()
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	self:SetAutoDelete(true)
+	self.xml = CScriptXmlInit()
+	self.xml:ParseFile(XML_FILE)
+	self:Build()
+	local p = profile()
+	-- the row shown first: the profile in use (or chosen last), None when that is None
+	self.chosen = p.current_profile()
+	self:Refresh()
+end
+
+function UIProfileMenu:__finalize()
+end
+
+function UIProfileMenu:Button(node, name, fn)
+	local b = self.xml:Init3tButton(node, self)
+	self:Register(b, name)
+	self:AddCallback(name, ui_events.BUTTON_CLICKED, function() guard(name, fn, self) end, self)
+	return b
+end
+
+function UIProfileMenu:Build()
+	local xml = self.xml
+	xml:InitFrame("menu:background", self)
+	self.title = xml:InitTextWnd("menu:title", self)
+	self.list_title = xml:InitTextWnd("menu:list_title", self)
+	-- Rows are check buttons with their text on top, as MCM's own list
+	-- (elements:btn_list): the chosen one is kept checked, so it stays
+	-- pressed (SetCheck in Refresh).
+	local row = xml:InitStatic("menu:row", self)
+	local pos = row:GetWndPos()
+	local rw, rh = row:GetWidth(), row:GetHeight()
+	row:Show(false)
+	self.row_texts = {}
+	for i = 1, ROWS do
+		local name = "row_" .. i
+		local y = pos.y + (i - 1) * (rh + 3)
+		local b = xml:InitCheck("menu:row", self)
+		self:Register(b, name)
+		self:AddCallback(name, ui_events.BUTTON_CLICKED, function() guard(name, self.OnRow, self, i) end, self)
+		at(b, pos.x, y, rw, rh)
+		local t = xml:InitTextWnd("menu:row_text", self)
+		at(t, pos.x + 8, y, rw - 12, rh)
+		self.rows[i] = b
+		self.row_texts[i] = t
+	end
+	self.btn_up = self:Button("menu:btn_up", "btn_up", function(s) s:Page(-1) end)
+	self.btn_down = self:Button("menu:btn_down", "btn_down", function(s) s:Page(1) end)
+	self.new_caption = xml:InitTextWnd("menu:new_caption", self)
+	self.new_name = xml:InitEditBox("menu:new_name", self)
+	self.btn_create = self:Button("menu:btn_create", "btn_create", self.OnCreate)
+
+	self.details = xml:InitTextWnd("menu:details", self)
+	self.equip = xml:InitStatic("menu:equip", self)
+	self:BuildColumn()
+	self.bag = xml:InitStatic("menu:bag", self)
+	self.bag_caption = xml:InitTextWnd("menu:bag_caption", self)
+	self.what = xml:InitTextWnd("menu:what", self)
+	self.btn_play = self:Button("menu:btn_play", "btn_play", self.OnPlay)
+	self.btn_close = self:Button("menu:btn_close", "btn_close", self.Close)
+	self.btn_close:Show(self.how == "switch")
+
+	self.title:SetText(self.how == "arrival" and "Which character do you play in this game?" or "Profiles")
+	self.list_title:SetText("Profiles")
+	self.new_caption:SetText("New profile from the character you have now:")
+	self.btn_create:TextControl():SetText("Create and play")
+	self.btn_up:TextControl():SetText("Up")
+	self.btn_down:TextControl():SetText("Down")
+	self.btn_close:TextControl():SetText("Close")
+	self.bag_caption:SetText("Backpack")
+
+	local ok, info = pcall(function() return utils_ui.UIInfoItem(self, 400) end)
+	self.info = ok and info or nil
+	if not ok then
+		log("! menu: no item card (%s)", tostring(info))
+	end
+end
+
+-- The equipment column: G.A.M.M.A.'s, scaled to the panel's height (s) and
+-- widened or narrowed from the 16:9 its units are made for to this screen
+-- (k). Its background is the inventory's own, cut off below the belt; if the
+-- cut cannot be made, the background is left out and the cells get boxes.
+function UIProfileMenu:BuildColumn()
+	local ph = self.equip:GetHeight()
+	self.s = ph / INV.crop
+	self.k = self.R / INV.ratio
+	local pos = self.equip:GetWndPos()
+	local w = INV.w * self.s * self.k
+	at(self.equip, pos.x, pos.y, w, ph)
+	local bg = self.xml:InitStatic("menu:inv_back", self.equip)
+	at(bg, 0, 0, w, ph)
+	local ok, err = pcall(function()
+		local r = bg:GetTextureRect()
+		local h = (r.y2 - r.y1) * INV.crop / INV.h
+		assert(h > 0 and r.x2 > r.x1, "no texture rect")
+		bg:SetTextureRect(Frect():set(r.x1, r.y1, r.x2, r.y1 + h))
+	end)
+	if not ok then
+		bg:Show(false)
+		log("! menu: the inventory background could not be cut (%s); plain boxes instead", tostring(err))
+	end
+	self.inv_bg = ok
+end
+
+-- A cell of the column in window units, from G.A.M.M.A.'s units.
+function UIProfileMenu:InvBox(x, y, w, h)
+	local sx = self.s * self.k
+	return x * sx, y * self.s, w * sx, h * self.s
+end
+
+-- The rows' values: None first, then every profile.
+function UIProfileMenu:Entries()
+	local p = profile()
+	local t = { p.NONE }
+	for _, n in ipairs(p.profiles()) do
+		t[#t + 1] = n
+	end
+	return t
+end
+
+-- The Skill tree class of a stored character (its translated name), or nil
+-- when it has none or the profile was written without Skill tree.
+function class_name(c)
+	local st = type(c) == "table" and type(c.skill_tree) == "table" and c.skill_tree
+	local cls = st and st.class
+	if type(cls) ~= "string" or cls == "" then
+		return nil
+	end
+	local ok, s = pcall(game.translate_string, "st_spec_class_" .. cls)
+	return ok and type(s) == "string" and s ~= "st_spec_class_" .. cls and s or cls
+end
+
+function UIProfileMenu:Label(name)
+	local p = profile()
+	local phase = core().get_phase()
+	if name == p.NONE then
+		return self.how == "arrival" and "None: this save's character" or "None: keep my character"
+	end
+	local i = p.info(name)
+	local label = name
+	local cls = class_name(i and i.character)
+	if cls then
+		label = label .. " - " .. cls
+	end
+	if self.how == "switch" and phase == "live" and name == p.current_profile() then
+		label = label .. "  (in use)"
+	elseif not (i and i.character) then
+		label = label .. "  (empty)"
+	end
+	return label
+end
+
+function UIProfileMenu:Refresh()
+	local entries = self:Entries()
+	self.entries = entries
+	if #entries <= ROWS then
+		self.first = 1
+	else
+		self.first = math.max(1, math.min(self.first, #entries - ROWS + 1))
+	end
+	for i, b in ipairs(self.rows) do
+		local name = entries[self.first + i - 1]
+		local t = self.row_texts[i]
+		b:Show(name ~= nil)
+		t:Show(name ~= nil)
+		if name then
+			local on = name == self.chosen
+			pcall(function() b:SetCheck(on) end)
+			t:SetText(self:Label(name))
+			t:SetTextColor(color(on and CLR_ROW_ON or CLR_ROW))
+		end
+	end
+	self.btn_up:Show(#entries > ROWS)
+	self.btn_down:Show(#entries > ROWS)
+	self:ShowChosen()
+end
+
+function UIProfileMenu:Page(d)
+	self.first = self.first + d * (ROWS - 1)
+	self:Refresh()
+end
+
+function UIProfileMenu:OnRow(i)
+	local name = self.entries and self.entries[self.first + i - 1]
+	if name then
+		self.chosen = name
+		self:Refresh()
+	end
+end
+
+-- The chosen row's character: None shows the actor as it is now.
+function UIProfileMenu:ShowChosen()
+	local p = profile()
+	local name = self.chosen
+	local c, head
+	if name == p.NONE then
+		local ok, cur = pcall(state().read)
+		c = ok and cur or nil
+		head = string.format("%%c[255,235,200,75]%s%%c[default]", self.how == "arrival" and "This save's character" or "Your character now")
+	else
+		local i = p.info(name) or {}
+		c = i.character
+		local when = i.written and os.date("%Y-%m-%d %H:%M", i.written) or "never"
+		head = string.format("%%c[255,235,200,75]%s%%c[default]   written %s, revision %s%s", name, when,
+			tostring(i.revision or 0), c and c.nick and (", by " .. tostring(c.nick)) or "")
+	end
+	local lines = { head }
+	if c then
+		local skills = 0
+		local sl = type(c.mod_state) == "table" and c.mod_state.skills_levels
+		if type(sl) == "table" then
+			for _, v in pairs(sl) do
+				if type(v) == "number" then skills = skills + v end
+			end
+		end
+		lines[#lines + 1] = string.format("Money: %s RU    Rank: %s    Reputation: %s    Faction: %s",
+			tostring(c.money or "?"), tostring(c.rank or "?"), tostring(c.reputation or "?"),
+			c.faction and game.translate_string(c.faction) or "?")
+		lines[#lines + 1] = string.format("Items: %s    Recipes: %s%s", type(c.items) == "table" and #c.items or 0,
+			type(c.recipes) == "table" and #c.recipes or 0, skills > 0 and ("    Skill levels: " .. skills) or "")
+		local st = type(c.skill_tree) == "table" and c.skill_tree
+		if st then
+			local perks = 0
+			for _ in pairs(type(st.perks) == "table" and st.perks or {}) do perks = perks + 1 end
+			local xp = type(st.xp) == "table" and st.xp or {}
+			local cxp = st.class and type(xp.class) == "table" and xp.class[st.class]
+			lines[#lines + 1] = string.format("Class: %s    Perks: %s    XP: %s general%s",
+				class_name(c) or "none", perks,
+				tostring(xp.general or 0), cxp and (", " .. tostring(cxp) .. " class") or "")
+		end
+	else
+		lines[#lines + 1] = "Empty: it takes the character you have when you choose it."
+	end
+	self.details:SetText(table.concat(lines, " \\n"))
+	guard("loadout", self.ShowLoadout, self, c)
+
+	self.what:SetText(core().describe_choice(name, self.how))
+	local current = self.how == "switch" and (
+		(name == p.NONE and core().get_phase() == "none") or
+		(name == p.current_profile() and core().get_phase() == "live"))
+	self.btn_play:Enable(not current)
+	self.btn_play:TextControl():SetText(name == p.NONE
+		and (self.how == "arrival" and "Play this character" or "Stop using a profile")
+		or ("Play as " .. name))
+end
+
+------------------------------------------------------------------ the loadout
+
+function UIProfileMenu:ClearLoadout()
+	if self.equip_layer then self.equip:DetachChild(self.equip_layer) end
+	if self.bag_layer then self.bag:DetachChild(self.bag_layer) end
+	self.equip_layer, self.bag_layer = nil, nil
+	self.cells = {}
+end
+
+-- An item's icon in layer, fitted into the box (x, y, w, h: units) keeping
+-- its shape on screen, with its condition bar and a count. Returns the icon.
+-- opts: rot (turned 90 degrees, as the inventory's pistol and rifle cells;
+-- the window is sized as G.A.M.M.A.'s utils_ui does it: the ratio goes to
+-- the height, which lies across the screen once turned), bar ({ x, y, w, h }:
+-- a slot's condition bar, the inventory's grey one, always shown).
+function UIProfileMenu:Icon(layer, it, x, y, w, h, count, opts)
+	opts = opts or {}
+	local sec = it.section
+	if not section_ok(sec) then
+		return nil
+	end
+	local gx, gy = ini_sys:r_float_ex(sec, "inv_grid_x") or 0, ini_sys:r_float_ex(sec, "inv_grid_y") or 0
+	local gw, gh = grid_size(sec)
+	local iw, ih
+	if opts.rot then
+		local s = math.min(w / (gh * self.R), h / gw)
+		iw, ih = gw * s, gh * s * self.R
+	else
+		local s = math.min(w / (gw * self.R), h / gh)
+		iw, ih = gw * self.R * s, gh * s
+	end
+	local ix, iy = x + (w - iw) / 2, y + (h - ih) / 2
+	local st = self.xml:InitStatic("menu:icon", layer)
+	st:InitTexture(ini_sys:r_string_ex(sec, "icons_texture") or "ui\\ui_icon_equipment")
+	st:SetTextureRect(Frect():set(gx * ICON_PX, gy * ICON_PX, (gx + gw) * ICON_PX, (gy + gh) * ICON_PX))
+	at(st, ix, iy, iw, ih)
+	if opts.rot then
+		pcall(function()
+			st:EnableHeading(true)
+			st:SetHeading(math.pi / 2)
+		end)
+	end
+	local cond = tonumber(it.cond)
+	if opts.bar then
+		if cond then
+			local b = opts.bar
+			local bar = self.xml:InitStatic("menu:slot_bar", layer)
+			at(bar, b[1], b[2], math.max(1, b[3] * math.max(0, math.min(1, cond))), b[4])
+		end
+	elseif cond and cond < 0.999 and (it.slot or sec:find("^wpn_") or ini_sys:r_bool_ex(sec, "use_condition", false)) then
+		local bar = self.xml:InitStatic("menu:bar", layer)
+		local c = math.max(0, math.min(1, cond))
+		at(bar, x + 2, y + h - 3, math.max(1, (w - 4) * c), 2)
+		bar:SetTextureColor(GetARGB(230, math.floor(255 * (1 - c)), math.floor(200 * c + 40), 40))
+	end
+	if count and count > 1 then
+		local t = self.xml:InitTextWnd("menu:count", layer)
+		at(t, x, y + h - 14, w - 2, 13)
+		t:SetText("x" .. count)
+	end
+	self.cells[#self.cells + 1] = { wnd = st, sec = sec }
+	return st
+end
+
+-- Backpack stacks: one per section for plain items; weapons, upgraded and
+-- loaded items alone.
+local function stacks(items)
+	local out, by = {}, {}
+	for _, it in ipairs(items) do
+		local alone = it.section:find("^wpn_") or (type(it.upgrades) == "table" and #it.upgrades > 0) or it.mag or it.ammo_type
+		local key = not alone and (it.section .. "|" .. tostring(it.uses or "")) or nil
+		if key and by[key] then
+			by[key].count = by[key].count + 1
+		else
+			local w, h = grid_size(it.section)
+			local s = { it = it, count = 1, w = w, h = h }
+			out[#out + 1] = s
+			if key then by[key] = s end
+		end
+	end
+	table.sort(out, function(a, b)
+		if a.w * a.h ~= b.w * b.h then return a.w * a.h > b.w * b.h end
+		return a.it.section < b.it.section
+	end)
+	return out
+end
+
+-- First fit on a grid cols wide, as the inventory packs. Returns rows used.
+local function pack(list, cols)
+	local used = {}
+	local function free(c, r, w, h)
+		for y = r, r + h - 1 do
+			for x = c, c + w - 1 do
+				if used[y * cols + x] then return false end
+			end
+		end
+		return true
+	end
+	local rows = 0
+	for _, s in ipairs(list) do
+		local w, h = math.min(s.w, cols), s.h
+		local r = 0
+		while not s.col do
+			for c = 0, cols - w do
+				if free(c, r, w, h) then
+					for y = r, r + h - 1 do
+						for x = c, c + w - 1 do used[y * cols + x] = true end
+					end
+					s.col, s.row = c, r
+					rows = math.max(rows, r + h)
+					break
+				end
+			end
+			r = r + 1
+		end
+	end
+	return rows
+end
+
+function UIProfileMenu:ShowLoadout(c)
+	self:ClearLoadout()
+	self.equip_layer = self.xml:InitStatic("menu:layer", self.equip)
+	self.bag_layer = self.xml:InitStatic("menu:layer", self.bag)
+	local EW, EH = self.equip:GetWidth(), self.equip:GetHeight()
+	local BW, BH = self.bag:GetWidth(), self.bag:GetHeight()
+	at(self.equip_layer, 0, 0, EW, EH)
+	at(self.bag_layer, 0, 0, BW, BH)
+	local items = c and type(c.items) == "table" and c.items or {}
+
+	-- equipment: G.A.M.M.A.'s cells over its background
+	local belt, slots, rest = {}, {}, {}
+	for _, it in ipairs(items) do
+		if type(it.section) == "string" then
+			if it.belt then
+				belt[#belt + 1] = it
+			elseif it.slot and not slots[it.slot] then
+				slots[it.slot] = it
+			else
+				rest[#rest + 1] = it
+			end
+		end
+	end
+	table.sort(belt, function(a, b) return (tonumber(a.belt) or 0) < (tonumber(b.belt) or 0) end)
+	local layer = self.equip_layer
+	local function plain_box(x, y, w, h)
+		if not self.inv_bg then
+			local bg = self.xml:InitStatic("menu:slot_bg", layer)
+			at(bg, x, y, w, h)
+		end
+	end
+	local helm_room, bkpk_room = outfit_room(slots[7])
+	local known = {}
+	for _, e in ipairs(EQUIP) do
+		local s = e[1]
+		known[s] = true
+		local x, y, w, h = self:InvBox(e[2], e[3], e[4], e[5])
+		plain_box(x, y, w, h)
+		local it = slots[s]
+		if it then
+			local bar
+			if e[6] then
+				local bx, by, bw, bh = self:InvBox(e[2] + e[6], e[3] + e[7], e[8], BAR_H)
+				bar = { bx, by, bw, bh }
+			end
+			self:Icon(layer, it, x + 1, y + 1, w - 2, h - 2, nil, { rot = e[9], bar = bar })
+		end
+		local b = SLOT_BLOCKERS[s]
+		if b and ((s == 12 and not helm_room) or (s == 13 and not bkpk_room)) then
+			local blk = self.xml:InitStatic("menu:helmet_blocker", layer)
+			at(blk, self:InvBox(b[1], b[2], b[3], b[4]))
+		end
+	end
+	-- items in a slot the inventory does not show go to the backpack
+	for s, it in pairs(slots) do
+		if not known[s] then rest[#rest + 1] = it end
+	end
+	local open = math.max(slots[7] and artefact_slots(slots[7]) or 0, math.min(#belt, #BELT_X))
+	for i, bx in ipairs(BELT_X) do
+		local x, y, w, h = self:InvBox(bx, BELT_Y, BELT_W, BELT_H)
+		plain_box(x, y, w, h)
+		if belt[i] then
+			self:Icon(layer, belt[i], x + 1, y + 1, w - 2, h - 2)
+		end
+		if i > open then
+			local blk = self.xml:InitStatic("menu:artefact_blocker", layer)
+			at(blk, self:InvBox(bx + BELT_BLOCKER[1], BELT_Y + BELT_BLOCKER[2], BELT_BLOCKER[3], BELT_BLOCKER[4]))
+		end
+	end
+	for i = #BELT_X + 1, #belt do
+		rest[#rest + 1] = belt[i]
+	end
+
+	-- backpack: the largest cell that fits everything
+	local list = stacks(rest)
+	local cell, cols
+	for _, ch in ipairs(BAG_CELLS) do
+		cell = ch
+		cols = math.max(1, math.floor((BW - 8) / (ch * self.R)))
+		for _, s in ipairs(list) do s.col, s.row = nil, nil end
+		local rows = pack(list, cols)
+		if rows * ch <= BH - 8 then
+			break
+		end
+	end
+	local cw = cell * self.R
+	for _, s in ipairs(list) do
+		local x, y = 4 + s.col * cw, 4 + s.row * cell
+		if y + s.h * cell <= BH then
+			self:Icon(self.bag_layer, s.it, x + 1, y + 1, math.min(s.w, cols) * cw - 2, s.h * cell - 2, s.count)
+		end
+	end
+end
+
+------------------------------------------------------------------ actions
+
+function UIProfileMenu:Finish(name)
+	self:Pause(false)
+	self:HideDialog()
+	core().pick(name, self.how)
+end
+
+function UIProfileMenu:OnPlay()
+	if not self.chosen then
+		return
+	end
+	self:Finish(self.chosen)
+end
+
+function UIProfileMenu:OnCreate()
+	local name = self.new_name:GetText() or ""
+	name = name:match("^%s*(.-)%s*$")
+	local ok, msg = profile().create_profile(name)
+	if not ok then
+		self.what:SetText("%c[255,230,120,90]" .. tostring(msg))
+		return
+	end
+	self.new_name:SetText("")
+	self:Finish(name)
+end
+
+function UIProfileMenu:Close()
+	if self.how ~= "switch" then
+		return
+	end
+	self:Pause(false)
+	self:HideDialog()
+end
+
+-- Solo only, and only with MCM "pause_menu" on.
+function UIProfileMenu:Pause(on)
+	if on then
+		if core().setting("pause_menu") ~= true or core().in_session() then
+			return
+		end
+		local ok, paused = pcall(function() return device():is_paused() end)
+		if ok and not paused and pcall(function() device():pause(true) end) then
+			self.paused = true
+		end
+	elseif self.paused then
+		self.paused = false
+		pcall(function() device():pause(false) end)
+	end
+end
+
+function UIProfileMenu:Update()
+	CUIScriptWnd.Update(self)
+	if not self.info then
+		return
+	end
+	local hover
+	for _, c in ipairs(self.cells) do
+		if c.wnd:IsCursorOverWindow() then
+			hover = c.sec
+			break
+		end
+	end
+	local ok = pcall(function()
+		if hover then
+			self.info:Update(nil, hover)
+		else
+			self.info:Update()
+		end
+	end)
+	if not ok then
+		self.info = nil
+	end
+end
+
+function UIProfileMenu:OnKeyboard(dik, keyboard_action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	if res == false and keyboard_action == ui_events.WINDOW_KEY_PRESSED and self.how == "switch" then
+		if dik == DIK_keys.DIK_ESCAPE then
+			self:Close()
+		elseif dik == menu_key() then
+			closed_by_key = true
+			self:Close()
+		end
+	end
+	return res
+end
+
+------------------------------------------------------------------ open
+
+function is_open()
+	return GUI ~= nil and GUI:IsShown()
+end
+
+function open(how)
+	if not db.actor then
+		return false
+	end
+	pcall(hide_hud_inventory)
+	if is_open() then
+		if GUI.how == how then
+			return true
+		end
+		GUI:Pause(false)
+		GUI:HideDialog()
+	end
+	GUI = UIProfileMenu(how)
+	GUI:ShowDialog(true)
+	GUI:Pause(true)
+	log("profile menu open (%s)", how)
+	return true
+end
+
+function close()
+	if is_open() then
+		GUI:Pause(false)
+		GUI:HideDialog()
+	end
+	GUI = nil
+end
+
+local function on_key_press(key)
+	if key == menu_key() then
+		closed_by_key = false
+	end
+end
+
+local function on_key_release(key)
+	if key ~= menu_key() then
+		return
+	end
+	if closed_by_key then
+		closed_by_key = false
+		return
+	end
+	if is_open() then
+		return
+	end
+	local ok, why = core().can_switch()
+	if ok then
+		open("switch")
+	elseif why then
+		core().tip(why)
+	end
+end
+
+function on_game_start()
+	RegisterScriptCallback("on_key_press", on_key_press)
+	RegisterScriptCallback("on_key_release", on_key_release)
+end
+
+function on_game_end()
+	close()
+	UnregisterScriptCallback("on_key_press", on_key_press)
+	UnregisterScriptCallback("on_key_release", on_key_release)
+end

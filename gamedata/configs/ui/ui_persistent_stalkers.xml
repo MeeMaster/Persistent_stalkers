@@ -1,0 +1,92 @@
+<w>
+	<!-- The profile menu (persistent_stalkers_menu.script). Positions are 1024x768 units.
+	     Placeholder look: stock frame, button, edit box and font textures. Rows, slot boxes,
+	     icons, bars and counts are placed by the script; their sizes here are overridden. -->
+	<menu>
+		<background x="40" y="30" width="944" height="708" stretch="1">
+			<texture>ui_inGame2_hint_wnd_main_window</texture>
+		</background>
+		<title x="70" y="42" width="880" height="30" stretch="1">
+			<text font="letterica25" r="230" g="220" b="190" align="l" vert_align="c"/>
+		</title>
+
+		<!-- Left: the profiles (ROWS rows from row's position, 3 apart), paging, a new profile -->
+		<list_title x="60" y="82" width="240" height="22" stretch="1">
+			<text font="letterica18" r="200" g="200" b="200" align="l" vert_align="c"/>
+		</list_title>
+		<!-- a check button: the chosen row is kept checked (pressed); its text is row_text -->
+		<row x="60" y="108" width="240" height="28" stretch="1">
+			<texture>ui_button_ordinary</texture>
+		</row>
+		<row_text x="0" y="0" width="10" height="28" stretch="1">
+			<text font="letterica18" r="225" g="220" b="200" align="l" vert_align="c"/>
+		</row_text>
+		<btn_up x="60" y="578" width="117" height="24" check_mode="0" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_up>
+		<btn_down x="183" y="578" width="117" height="24" check_mode="0" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_down>
+		<new_caption x="60" y="628" width="240" height="36" stretch="1" complex_mode="1">
+			<text font="letterica16" r="190" g="190" b="180" align="l" vert_align="t" complex_mode="1"/>
+		</new_caption>
+		<new_name x="60" y="666" width="240" height="26" stretch="1">
+			<texture>ui_inGame2_edit_box_1</texture>
+			<text x="3" font="letterica18" vert_align="c"/>
+		</new_name>
+		<btn_create x="60" y="698" width="240" height="30" check_mode="0" stretch="1">
+			<text font="letterica18" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_create>
+
+		<!-- Right: the chosen row's name and stats; its equipment as G.A.M.M.A.'s inventory
+		     shows it (the script sets the column's width from its height), the backpack
+		     beside it; what choosing it does; the buttons -->
+		<details x="320" y="76" width="640" height="76" stretch="1" complex_mode="1">
+			<text font="letterica16" r="210" g="210" b="210" align="l" vert_align="t" complex_mode="1"/>
+		</details>
+		<equip x="320" y="156" width="260" height="536" stretch="1"/>
+		<inv_back x="0" y="0" width="10" height="10" stretch="1">
+			<texture>ui_inGame2_inventory_back</texture>
+		</inv_back>
+		<helmet_blocker x="0" y="0" width="10" height="10" stretch="1">
+			<texture>ui_inGame2_helmet_blocker</texture>
+		</helmet_blocker>
+		<artefact_blocker x="0" y="0" width="10" height="10" stretch="1">
+			<texture>ui_inGame2_artefact_blocker</texture>
+		</artefact_blocker>
+		<slot_bar x="0" y="0" width="10" height="6" stretch="1">
+			<texture r="142" g="149" b="149">ui_inGame2_inventory_status_bar</texture>
+		</slot_bar>
+		<bag_caption x="592" y="156" width="368" height="18" stretch="1">
+			<text font="letterica16" r="170" g="170" b="160" align="l" vert_align="c"/>
+		</bag_caption>
+		<bag x="592" y="176" width="368" height="380" stretch="1">
+			<texture r="12" g="14" b="12" a="160">ui_inGame2_white_rect</texture>
+		</bag>
+		<layer x="0" y="0" width="10" height="10"/>
+		<slot_bg x="0" y="0" width="10" height="10" stretch="1">
+			<texture r="40" g="42" b="38" a="200">ui_inGame2_white_rect</texture>
+		</slot_bg>
+		<icon x="0" y="0" width="10" height="10" stretch="1"/>
+		<bar x="0" y="0" width="10" height="2" stretch="1">
+			<texture>ui_inGame2_white_rect</texture>
+		</bar>
+		<count x="0" y="0" width="30" height="13" stretch="1">
+			<text font="letterica16" r="235" g="235" b="225" align="r" vert_align="c"/>
+		</count>
+		<what x="592" y="562" width="368" height="128" stretch="1" complex_mode="1">
+			<text font="letterica16" r="210" g="210" b="210" align="l" vert_align="t" complex_mode="1"/>
+		</what>
+		<btn_play x="592" y="698" width="246" height="30" check_mode="0" stretch="1">
+			<text font="letterica18" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_play>
+		<btn_close x="850" y="698" width="110" height="30" check_mode="0" stretch="1">
+			<text font="letterica18" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_close>
+	</menu>
+</w>

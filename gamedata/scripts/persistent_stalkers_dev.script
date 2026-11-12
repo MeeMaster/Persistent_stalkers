@@ -1,0 +1,27 @@
+-- Persistent Stalkers development helper. Console, with the game started
+-- with -dbg:
+--   run_string persistent_stalkers_dev.reload()
+-- Re-reads the mod's scripts from disk inside a running session, through
+-- Master Core's reload (master_core_dev): the repo folder first, then the
+-- installed mod. Each module's state (get_state / set_state) is carried
+-- over. The profile menu closes on a reload (its on_game_end).
+-- persistent_stalkers_mcm only builds the MCM page, so it stays
+-- loaded. Refused while a restore is running.
+
+function reload()
+	return master_core_dev.reload({
+		name = "Persistent Stalkers",
+		tag = "[PersistentStalkers]",
+		roots = { [[D:\Code\Stalker mods\Persistent_stalkers\gamedata\scripts\]] },
+		files = {
+			"persistent_stalkers_profile.script",
+			"persistent_stalkers_state.script",
+			"persistent_stalkers.script",
+			"persistent_stalkers_menu.script",
+		},
+		busy = function()
+			local st = rawget(_G, "persistent_stalkers_state")
+			return st and st.busy and st.busy() and "a restore is running" or nil
+		end,
+	})
+end
