@@ -13,7 +13,7 @@ function reload()
 	return master_core_dev.reload({
 		name = "Persistent Stalkers",
 		tag = "[PersistentStalkers]",
-		roots = { [[D:\Code\Stalker mods\PS_v2\gamedata\scripts\]] },
+		roots = { [[D:\Code\Stalker mods\Persistent_stalkers\gamedata\scripts\]] },
 		files = {
 			"persistent_stalkers_profile.script",
 			"persistent_stalkers_state.script",

@@ -2,12 +2,12 @@
 -- (AGENTS.md). A profile holds one character (persistent_stalkers_profile,
 -- persistent_stalkers_state). Which profile is played is chosen at the main
 -- menu (ui_main_menu, persistent_stalkers_menu), before a game: every game
--- started, loaded or joined after that is played with it, and it cannot be
--- changed in a game. MCM "Save mode" decides how the profile relates to the
--- save:
+-- started, loaded or joined after that is played with it. In a game it can
+-- be changed only in debug mode (-dbg: F8, persistent_stalkers_menu). How
+-- the profile relates to the save is MCM's "constant saves" checkbox:
 --
---   off      nothing is read or written.
---   profile  (A) the character lives apart from the save. The profile is
+--   save     (B, the default, the box unticked) see below.
+--   profile  (A, the box ticked) the character lives apart from the save. The profile is
 --            written on every change (1 s after it, and every 5 s), and on
 --            every load or join of a world played with it the actor is made
 --            to match it, whatever the save or xrRazom restored. Health,
@@ -24,7 +24,8 @@
 --
 -- A profile with no character yet takes the one of the first game played
 -- with it. None (the list's first row) plays each save's own character and
--- writes nothing. Every host save remembers what it was played with (the
+-- writes nothing: it is the mod switched off (the effective mode "off").
+-- Every host save remembers what it was played with (the
 -- profile, or None: m_data.persistent_stalkers.profile); that is how "save"
 -- mode knows a save is the profile's own.
 --
@@ -55,10 +56,9 @@ local CLIENT_MAX_WAIT = 90000 -- ms a client waits for JoinSettling at most
 local WORLD_WAIT = 20000 -- ms a client waits for the save's key
 local HELLO_EVERY = 3000 -- ms between a client's key requests
 local LEVEL_CHANGE_FOR = 180 -- s a level change marker counts
-local DEFAULT_MODE = "off"
 
 local DEFAULTS = {
-	mode = DEFAULT_MODE,
+	constant_saves = false, -- MCM's checkbox: "profile" mode when ticked, else "save"
 	carry_money = true,
 	carry_rank = true,
 	carry_goodwill = true,
@@ -71,7 +71,7 @@ local DEFAULTS = {
 }
 
 -- idle, waiting (arrival), applying, live (a profile is in use and written),
--- none (playing without a profile), dead, off
+-- none (playing without a profile), dead
 local phase = "idle"
 local arrival -- { t, settled_t, level_change, hello_t }
 local next_write = 0
@@ -109,22 +109,19 @@ function setting(key)
 	return DEFAULTS[key]
 end
 
--- MCM's Save mode is on (profile or save), whatever the profile.
-function enabled()
-	local m = setting("mode")
-	return m == "profile" or m == "save"
+-- MCM's choice, whatever the profile: "profile" with constant saves ticked,
+-- else "save". Until 2026-11-12 it was a dropdown ("mode": off, profile,
+-- save); off is now None at the main menu, and that old value is ignored.
+function chosen_mode()
+	return setting("constant_saves") == true and "profile" or "save"
 end
 
--- The effective mode: "off" whatever MCM says while the profile is None.
+-- The effective mode: "off" while the profile is None.
 function mode()
 	if profile().current_profile() == profile().NONE then
 		return "off"
 	end
-	local m = setting("mode")
-	if m == "profile" or m == "save" then
-		return m
-	end
-	return "off"
+	return chosen_mode()
 end
 
 function get_phase()
@@ -395,10 +392,6 @@ local function arrival_update(now)
 end
 
 local function start_arrival(level_change)
-	if not enabled() then
-		phase = "off"
-		return
-	end
 	phase = "waiting"
 	arrival = { t = time_global(), level_change = level_change }
 end
@@ -414,24 +407,40 @@ local function on_first_update()
 end
 
 -------------------------------------------------------------------------------
--- Console, for development: play another profile without quitting to the
--- main menu (where a player changes it). The profile in use is written
--- first, then the new one's character (its file) replaces the actor; an
--- empty one takes the character as it is. None stops using a profile; the
--- character stays. The selection follows, so the main menu shows it next.
+-- Switching in a game, for development only: the debug-mode menu (F8 with
+-- -dbg, persistent_stalkers_menu) and the console. A player changes the
+-- profile at the main menu. The profile in use is written first, then the
+-- new one's character (its file) replaces the actor; an empty one takes the
+-- character as it is (a copy). None stops using a profile; the character
+-- stays. The selection follows, so the main menu shows it next.
+
+-- Can a switch run now? Returns ok, why (why: nil when there is nothing to
+-- tell the player, such as no game).
+function can_switch()
+	if not in_game() then
+		return false, nil
+	end
+	if state().busy() or phase == "applying" then
+		return false, "a restore is running"
+	end
+	if phase == "waiting" or phase == "idle" then
+		return false, "the character is still being restored after the load"
+	end
+	if phase == "dead" or not db.actor:alive() or dante_busy() then
+		return false, "not while dying"
+	end
+	return phase == "live" or phase == "none", nil
+end
 
 function switch_to(name)
 	local p = profile()
-	if not (in_game() and enabled()) then
-		tip("not in a game, or Save mode is Off in MCM")
-		return
-	end
 	if not (name == p.NONE or (type(name) == "string" and p.has_profile(name))) then
 		tip("no profile " .. tostring(name))
 		return
 	end
-	if not (phase == "live" or phase == "none") or state().busy() or not db.actor:alive() or dante_busy() then
-		tip("could not switch profiles now (phase " .. phase .. ")")
+	local ok, why = can_switch()
+	if not ok then
+		tip("could not switch profiles now: " .. tostring(why or ("phase " .. phase)))
 		return
 	end
 	if (name == p.NONE and phase == "none") or (name == p.current_profile() and phase == "live") then
@@ -444,14 +453,14 @@ function switch_to(name)
 	p.use_profile(name)
 	remember(name)
 	if name == p.NONE then
-		go_none("console")
+		go_none("switched in a game")
 		tip("no profile now: you keep your character, and nothing is written")
 		return
 	end
 	local c = p.character()
 	local what = string.format("playing as %s; save the game so your saves follow it", name)
 	if c then
-		apply_character(c, "switched from the console", what)
+		apply_character(c, "switched in a game", what)
 	else
 		go_live("a new profile takes the character as it is")
 		tip(what)
@@ -487,7 +496,7 @@ local function save_state(m_data)
 	session_info.session = session_info.session or new_session()
 	session_info.counter = (session_info.counter or 0) + 1
 	local key = session_info.session .. "-" .. session_info.counter
-	local with = enabled() and (played_with() or (loaded and loaded.profile)) or nil
+	local with = played_with() or (loaded and loaded.profile) or nil
 	m_data.persistent_stalkers = { session = session_info.session, counter = session_info.counter, key = key,
 		profile = with, mode = mode() }
 	host_key = key
@@ -538,7 +547,7 @@ local function ev_saved(args)
 	end
 	host_key = t.key
 	got_world = true
-	local with = enabled() and played_with()
+	local with = played_with()
 	if with then
 		profile().set_world_profile(t.key, with)
 	end
@@ -573,9 +582,7 @@ end
 local function on_net_destroy()
 	state().cancel()
 	arrival = nil
-	if phase ~= "off" then
-		phase = "idle"
-	end
+	phase = "idle"
 end
 
 -- Death with nothing to keep the player alive (no DANTE, Azazel, Soulslike):
@@ -630,23 +637,19 @@ local function start_now()
 	end
 end
 
--- MCM Apply. Switched off mid-game, the mod stops at once. Switched on
--- mid-game, it waits for the next load or join: starting now would replace
--- the character in front of the player.
+-- MCM Apply: constant saves ticked or unticked mid-game takes effect at once
+-- (update() reads mode() each frame); a tip says which one is on now.
+local last_mode
 local function on_option_change()
-	if not in_game() then
-		return
-	end
-	if not enabled() then
-		if phase ~= "off" then
-			log("mode off")
+	local m = chosen_mode()
+	if in_game() and last_mode and m ~= last_mode then
+		tip(m == "profile" and "constant saves on: your character is written whenever it changes"
+			or "constant saves off: your character is written when you save")
+		if m == "profile" then
+			next_write = time_global()
 		end
-		state().cancel()
-		arrival = nil
-		phase = "off"
-	elseif phase == "off" or phase == "idle" then
-		tip("switched on: it starts when you next load a save or join a game")
 	end
+	last_mode = m
 end
 
 -------------------------------------------------------------------------------
@@ -708,6 +711,7 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_item_take_from_box", on_item)
 	RegisterScriptCallback("ActorMenu_on_mode_changed", on_mode_changed)
 	RegisterScriptCallback("on_option_change", on_option_change)
+	last_mode = chosen_mode()
 	master_core_net.register("pst_hello", ev_hello)
 	master_core_net.register("pst_world", ev_world)
 	master_core_net.register("pst_saved", ev_saved)
@@ -733,7 +737,7 @@ end
 
 -- After persistent_stalkers_dev.reload(): the world is already settled.
 function on_reload()
-	if in_game() and (phase == "idle" or phase == "waiting") and enabled() then
+	if in_game() and (phase == "idle" or phase == "waiting") then
 		start_now()
 	end
 end

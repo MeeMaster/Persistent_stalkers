@@ -13,6 +13,11 @@
 -- after a warning box; default is selected instead, and the files are kept
 -- as a backup. In a game the panel only shows the profile in use: changing
 -- it means quitting to the main menu.
+-- Debug mode only (the game started with -dbg, DEV_DEBUG): F8 in a game
+-- opens the same panel in a window of its own (UISwitchMenu) with every
+-- row. A click shows the row; "Switch to" runs persistent_stalkers.switch_to
+-- (the profile in use written, then the new one's character applied) once
+-- the window is closed. F8, Esc or Close shut it.
 -- Right of the list: the selected row's character, read only: its name and
 -- stats, then its loadout: the equipment column exactly as G.A.M.M.A.'s
 -- inventory lays it out (its background, slot cells, condition bars and
@@ -151,17 +156,27 @@ local function outfit_room(it)
 	return helm ~= false, bkpk ~= false
 end
 
-local MODE_NAMES = { off = "Off", profile = "Character lives in the profile", save = "Character follows the save" }
+local SWITCH_KEY = DIK_keys and DIK_keys.DIK_F8 -- debug mode only
+
+-- The game was started with -dbg.
+local function debug_mode()
+	return DEV_DEBUG and true or false
+end
 
 ------------------------------------------------------------------ the panel
 
--- Not a window of its own: its controls are children of a static of the main
--- menu, and its buttons are registered with the main menu (names pst_*).
+-- Not a window of its own: its controls are children of a static of its
+-- owner (the main menu, or the debug switch window), and its buttons are
+-- registered with the owner (names pst_*).
+--   how: "menu"   the main menu: every row, a click selects for the next game
+--        "pause"  the pause menu in a game: the profile in use, read only
+--        "switch" the debug window in a game: every row, "Switch to"
 class "ProfilePanel"
 
-function ProfilePanel:__init(mm)
+function ProfilePanel:__init(mm, how)
 	self.mm = mm
-	self.in_game = level.present() and true or false
+	self.how = how or (level.present() and "pause" or "menu")
+	self.in_game = self.how ~= "menu"
 	self.first = 1 -- the first profile row shown
 	self.rows = {}
 	self.cells = {} -- { wnd, sec } of the shown loadout, for the hover card
@@ -217,6 +232,11 @@ function ProfilePanel:Build()
 	self.btn_new:Show(not self.in_game)
 	self.btn_remove = self:Button("menu:btn_remove", "pst_btn_remove", self.OnRemove)
 	self.btn_remove:Show(false)
+	if self.how == "switch" then
+		self.btn_switch = self:Button("menu:btn_switch", "pst_btn_switch", self.OnSwitch)
+		self.btn_close = self:Button("menu:btn_close", "pst_btn_close", function(s) s.mm:Close() end)
+		self.btn_close:TextControl():SetText("Close")
+	end
 	self.note = xml:InitTextWnd("menu:note", wnd)
 
 	self.details = xml:InitTextWnd("menu:details", wnd)
@@ -233,8 +253,13 @@ function ProfilePanel:Build()
 	at(self.bag_caption, bx, self.bag_caption:GetWndPos().y, math.max(40, right - bx), self.bag_caption:GetHeight())
 	self.what = xml:InitTextWnd("menu:what", wnd)
 
-	self.title:SetText(self.in_game and "Your character in this game" or "Choose your character")
-	self.list_title:SetText(self.in_game and "Profile in use" or "Profiles")
+	local titles = {
+		menu = { "Choose your character", "Profiles" },
+		pause = { "Your character in this game", "Profile in use" },
+		switch = { "Switch profiles (debug mode)", "Profiles" },
+	}
+	self.title:SetText(titles[self.how][1])
+	self.list_title:SetText(titles[self.how][2])
 	self.btn_new:TextControl():SetText("New profile")
 	self.btn_remove:TextControl():SetText("Remove profile")
 	self.btn_up:TextControl():SetText("Up")
@@ -280,11 +305,11 @@ function ProfilePanel:InvBox(x, y, w, h)
 	return x * sx, y * self.s, w * sx, h * self.s
 end
 
--- The rows' values. At the main menu: None first, then every profile. In a
--- game: only what is in use.
+-- The rows' values. At the main menu and in the debug window: None first,
+-- then every profile. In the pause menu: only what is in use.
 function ProfilePanel:Entries()
 	local p = profile()
-	if self.in_game then
+	if self.how == "pause" then
 		return { p.current_profile() }
 	end
 	local t = { p.NONE }
@@ -305,7 +330,9 @@ function ProfilePanel:Label(name)
 	if cls then
 		label = label .. " - " .. cls
 	end
-	if not (i and i.character) then
+	if self.how == "switch" and name == p.current_profile() and core().get_phase() == "live" then
+		label = label .. "  (in use)"
+	elseif not (i and i.character) then
 		label = label .. "  (empty)"
 	end
 	return label
@@ -376,39 +403,58 @@ end
 
 function ProfilePanel:OnRow(i)
 	local name = self.entries and self.entries[self.first + i - 1]
-	if name and not self.in_game then
+	if name and self.how == "menu" then
 		self:Select(name)
+	elseif name and self.how == "switch" then
+		-- only shown: the switch is the button's
+		self.chosen = name
+		self:Refresh()
 	else
 		self:Refresh() -- puts the row's check back
 	end
 end
 
+-- The row is what the game is played with now (the debug window).
+function ProfilePanel:InUse(name)
+	local p, phase = profile(), core().get_phase()
+	return (name == p.NONE and phase == "none") or (name == p.current_profile() and phase == "live")
+end
+
 -- What playing with the row means, for the line under the loadout.
 function ProfilePanel:Describe(name, has_character)
 	local p = profile()
-	local mode = core().setting("mode")
-	local on = mode == "profile" or mode == "save"
-	if self.in_game then
+	local constant = core().chosen_mode() == "profile"
+	if self.how == "pause" then
 		local change = " To play another one, quit to the main menu and choose it there."
-		if not on then
-			return "Save mode is Off in MCM: no profile is in use in this game." .. change
-		end
 		if name == p.NONE then
 			return "You are playing this save's own character, without a profile. Nothing is written." .. change
 		end
 		return string.format("You are playing as %s.", name) .. change
 	end
+	if self.how == "switch" then
+		local cur = core().get_phase() == "live" and p.current_profile() or nil
+		if self:InUse(name) then
+			return name == p.NONE and "You are playing without a profile." or string.format("You are playing as %s.", name)
+		end
+		if name == p.NONE then
+			return string.format("Stop using %s: it is written now, and nothing after. You keep your character.", tostring(cur))
+		end
+		local first = cur and string.format("%s is written first. ", cur) or ""
+		if not has_character then
+			return first .. string.format("%s is empty: it takes the character you have now (a copy).", name)
+		end
+		return first .. string.format("Then %s's character replaces yours: gear, and what is ticked in MCM. Health and bleeding stay. Save the game afterwards so your saves follow %s.", name, name)
+	end
 	if name == p.NONE then
 		return "No profile: every game is played with its own character, as without this mod. Nothing is read or written."
 	end
-	local off = on and "" or " (Save mode is Off in MCM now: nothing happens until you pick a mode there.)"
 	if not has_character then
-		return string.format("%s is empty: it takes the character of the first game you start, load or join with it. A new game gives it the starting character; a save gives it a copy of that save's character.", name) .. off
+		return string.format("%s is empty: it takes the character of the first game you start, load or join with it. A new game gives it the starting character; a save gives it a copy of that save's character.", name)
 	end
-	if mode == "profile" then
-		return string.format("Every game you start, load or join is played as %s, exactly as you left it. Health and bleeding stay the save's.", name) .. off
+	if constant then
+		return string.format("Every game you start, load or join is played as %s, exactly as you left it (constant saves). Health and bleeding stay the save's.", name)
 	end
-	return string.format("Every game you start, load or join is played as %s. A save you made as %s keeps that save's character; any other game gets %s as it was at your last save. Health and bleeding stay the save's.", name, name, name) .. off
+	return string.format("Every game you start, load or join is played as %s. A save you made as %s keeps that save's character; any other game gets %s as it was at your last save. Health and bleeding stay the save's.", name, name, name)
 end
 
 -- The selected row's character. None has none at the main menu; in a game
@@ -460,8 +506,14 @@ function ProfilePanel:ShowChosen()
 	self.details:SetText(table.concat(lines, " \\n"))
 	guard("loadout", self.ShowLoadout, self, c)
 	self.what:SetText(self:Describe(name, c ~= nil))
-	local mode = core().setting("mode")
-	self.note:SetText(string.format("Save mode (MCM):\\n%s", MODE_NAMES[mode] or MODE_NAMES.off))
+	local constant = core().chosen_mode() == "profile"
+	self.note:SetText((constant and "Constant saves: on (MCM). The character is written whenever it changes."
+		or "The character follows the save: it is written when you save. Constant saves are in MCM.")
+		.. (self.how == "switch" and " \\n \\nDebug mode (-dbg): F8 or Esc closes this." or ""))
+	if self.btn_switch then
+		self.btn_switch:Enable(not self:InUse(name))
+		self.btn_switch:TextControl():SetText(name == p.NONE and "Stop using a profile" or ("Switch to " .. name))
+	end
 end
 
 -- The Skill tree class of a stored character (its translated name), or nil
@@ -741,6 +793,14 @@ function ProfilePanel:Remove(name)
 	return true, msg
 end
 
+-- The debug window's "Switch to": runs after the window is closed.
+function ProfilePanel:OnSwitch()
+	if self.how ~= "switch" or not self.chosen or self:InUse(self.chosen) then
+		return
+	end
+	self.mm:Finish(self.chosen)
+end
+
 function ProfilePanel:HideCard()
 	pcall(function() self.info:Show(false) end)
 end
@@ -904,12 +964,156 @@ function UIRemoveProfile:OnKeyboard(dik, keyboard_action)
 	return res
 end
 
+------------------------------------------------------------------ debug switch
+
+-- The panel in a window of its own, in a game, debug mode only (F8).
+class "UISwitchMenu" (CUIScriptWnd)
+
+GUI = nil
+local closed_by_key = false -- F8 closed the window: its release must not open it again
+local pending_switch -- a profile chosen in the window, switched to on the next update
+
+function UISwitchMenu:__init() super()
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	self:SetAutoDelete(true)
+	self.panel = ProfilePanel(self, "switch")
+end
+
+function UISwitchMenu:__finalize()
+end
+
+function UISwitchMenu:Update()
+	CUIScriptWnd.Update(self)
+	if self.panel then
+		local ok, err = pcall(self.panel.Update, self.panel)
+		if not ok then
+			log("! switch menu failed (%s)", tostring(err))
+			self.panel = nil
+		end
+	end
+end
+
+function UISwitchMenu:Close()
+	if self.panel then
+		self.panel:HideCard()
+	end
+	if self:IsShown() then
+		self:HideDialog()
+	end
+end
+
+function UISwitchMenu:Finish(name)
+	self:Close()
+	pending_switch = name
+	log("switch menu: %s", tostring(name))
+end
+
+function UISwitchMenu:OnKeyboard(dik, keyboard_action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	if res == false and keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+		if dik == DIK_keys.DIK_ESCAPE then
+			self:Close()
+			return true
+		elseif dik == SWITCH_KEY then
+			closed_by_key = true
+			self:Close()
+			return true
+		end
+	end
+	return res
+end
+
+function is_open()
+	return GUI ~= nil and GUI:IsShown()
+end
+
+-- Opens the debug switch window. Returns true when it is open.
+function open()
+	if not (db.actor and debug_mode()) then
+		return false
+	end
+	if is_open() then
+		return true
+	end
+	pcall(hide_hud_inventory)
+	local ok, w = pcall(function() return UISwitchMenu() end)
+	if not ok then
+		log("! the switch menu could not be built: %s", tostring(w))
+		return false
+	end
+	GUI = w
+	GUI:ShowDialog(true)
+	log("switch menu open")
+	return true
+end
+
+function close()
+	if is_open() then
+		GUI:Close()
+	end
+	GUI = nil
+end
+
+local function on_key_press(key)
+	if key == SWITCH_KEY then
+		closed_by_key = false
+	end
+end
+
+local function on_key_release(key)
+	if key ~= SWITCH_KEY or not debug_mode() then
+		return
+	end
+	if closed_by_key then
+		closed_by_key = false
+		return
+	end
+	if is_open() then
+		return
+	end
+	local ok, why = core().can_switch()
+	if ok then
+		open()
+	elseif why then
+		core().tip(why)
+	end
+end
+
+local function on_update()
+	if pending_switch then
+		local name = pending_switch
+		pending_switch = nil
+		guard("switch", core().switch_to, name)
+	end
+end
+
+local function on_net_destroy()
+	close()
+	pending_switch = nil
+end
+
+function on_game_start()
+	RegisterScriptCallback("on_key_press", on_key_press)
+	RegisterScriptCallback("on_key_release", on_key_release)
+	RegisterScriptCallback("actor_on_update", on_update)
+	RegisterScriptCallback("actor_on_net_destroy", on_net_destroy)
+end
+
+function on_game_end()
+	close()
+	UnregisterScriptCallback("on_key_press", on_key_press)
+	UnregisterScriptCallback("on_key_release", on_key_release)
+	UnregisterScriptCallback("actor_on_update", on_update)
+	UnregisterScriptCallback("actor_on_net_destroy", on_net_destroy)
+end
+
 ------------------------------------------------------------------ attach
 
 -- Called by the main menu when it is made. Returns the panel, or nil when it
 -- could not be built (the menu then works without it).
 function attach(mm)
-	local ok, panel = pcall(function() return ProfilePanel(mm) end)
+	local how = level.present() and "pause" or "menu"
+	local ok, panel = pcall(function() return ProfilePanel(mm, how) end)
 	if not ok then
 		log("! the profile panel could not be built: %s", tostring(panel))
 		return nil

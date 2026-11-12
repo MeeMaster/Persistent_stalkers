@@ -6,20 +6,11 @@
 	<string id="ui_mcm_persistent_stalkers_title">
 		<text>Your character, kept on this computer</text>
 	</string>
-	<string id="ui_mcm_persistent_stalkers_mode">
-		<text>Save mode</text>
+	<string id="ui_mcm_persistent_stalkers_constant_saves">
+		<text>Enable constant saves (Warning: may break the game)</text>
 	</string>
-	<string id="ui_mcm_persistent_stalkers_mode_desc">
-		<text>How your character relates to the save. Off: the mod does nothing. Otherwise every game you start, load or join is played with the profile chosen at the main menu, where profiles are also created and removed. Character follows the save: the profile is written each time you save, and loading a save played with it gives you the character from that save (die and reload, and you have what you had at that save); any other game gets the profile as it was at your last save. Character lives in the profile: the profile is written whenever your character changes, and loading a save gives you the profile's character, whatever the save holds; loading an older save rolls back the world, not you. Either way, health and bleeding stay with the save. Each player picks their own. Turned on during a game, it starts when you next load a save or join; turned off, it stops at once.</text>
-	</string>
-	<string id="ui_mcm_lst_pst_off">
-		<text>Off</text>
-	</string>
-	<string id="ui_mcm_lst_pst_profile">
-		<text>Character lives in the profile</text>
-	</string>
-	<string id="ui_mcm_lst_pst_save">
-		<text>Character follows the save</text>
+	<string id="ui_mcm_persistent_stalkers_constant_saves_desc">
+		<text>Off (the default): your character follows the save. The profile is written each time you save, and loading a save played with it gives you the character from that save: die and reload, and you have what you had at that save. Any other game gets the profile as it was at your last save. On: your character lives in the profile. It is written whenever it changes, and every game you load or join gives you that character, whatever the save holds. Loading an older save rolls back the world, not you, so things picked up since that save are in the world again, and other mods that expect the save's inventory may be confused. Either way, health and bleeding stay with the save. The profile, or None for no profile at all, is chosen at the main menu. Takes effect at once.</text>
 	</string>
 	<string id="ui_mcm_persistent_stalkers_title_parts">
 		<text>What the character carries (gear always)</text>
@@ -76,6 +67,6 @@
 		<text>Death takes the carried gear</text>
 	</string>
 	<string id="ui_mcm_persistent_stalkers_death_strip_desc">
-		<text>Only for "Character lives in the profile", and only when nothing else keeps you alive (DANTE, Azazel, Soulslike). Off: after a death and reload you have the gear you carried a moment before dying. Health and bleeding are the save's. On: the profile loses everything you carried except the binoculars, PDA and torch you have equipped.</text>
+		<text>Only with constant saves on, and only when nothing else keeps you alive (DANTE, Azazel, Soulslike). Off: after a death and reload you have the gear you carried a moment before dying. Health and bleeding are the save's. On: the profile loses everything you carried except the binoculars, PDA and torch you have equipped.</text>
 	</string>
 </string_table>

@@ -16,7 +16,7 @@
 
 	-----------------------------------------------------
 
-	Persistent Stalkers (PS_v2): this is the main menu MCM ships (the stock
+	Persistent Stalkers (branch menu_load): this is the main menu MCM ships (the stock
 	one with its MCM button), with three changes, all marked "Persistent
 	Stalkers" below:
 	- the background comes from ui_persistent_stalkers.xml: G.A.M.M.A.'s,

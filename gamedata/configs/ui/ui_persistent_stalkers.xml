@@ -69,6 +69,15 @@
 			<text font="letterica18" r="225" g="220" b="200"/>
 			<texture>ui_button_ordinary</texture>
 		</btn_remove>
+		<!-- the debug switch window (F8 with -dbg) only, in place of New and Remove -->
+		<btn_switch x="18" y="456" width="184" height="30" check_mode="0" stretch="1">
+			<text font="letterica18" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_switch>
+		<btn_close x="18" y="492" width="184" height="30" check_mode="0" stretch="1">
+			<text font="letterica18" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_close>
 		<!-- under the list: the save mode -->
 		<note x="18" y="534" width="184" height="172" stretch="1" complex_mode="1">
 			<text font="letterica16" r="170" g="170" b="160" align="l" vert_align="t" complex_mode="1"/>

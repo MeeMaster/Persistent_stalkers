@@ -1,12 +1,14 @@
--- Persistent Stalkers in MCM (Mod Configuration Menu): the save mode and
--- what the profile carries.
+-- Persistent Stalkers in MCM (Mod Configuration Menu): what the profile
+-- carries, and constant saves.
 --
---   Save mode (dropdown): off, "profile" (the character lives apart from the
---     save), "save" (the character follows the save). See
---     persistent_stalkers.script.
 --   Carried: money, rank and reputation, faction goodwill, faction, needs,
 --     skills and other mod state, recipes. Items always. Health, bleeding,
 --     body parts, radiation and psy health stay with the loaded save.
+--   Constant saves (a checkbox, last on the page, off by default): ticked,
+--     the character lives in the profile ("profile" mode, written on every
+--     change); unticked, it follows the save ("save" mode). See
+--     persistent_stalkers.script. Until 2026-11-12 this was a dropdown with
+--     Off as well; Off is now the None profile at the main menu.
 --
 -- No profiles here: choosing, creating and removing them is the main menu's
 -- (ui_main_menu.script, persistent_stalkers_menu.script), before a game.
@@ -23,9 +25,6 @@ function on_mcm_load()
 		sh = true,
 		gr = {
 			{ id = "title", type = "title", text = "ui_mcm_persistent_stalkers_title", align = "l", clr = { 255, 196, 18, 18 } },
-			{ id = "mode", type = "list", val = 0, def = "off",
-				content = { { "off", "pst_off" }, { "profile", "pst_profile" }, { "save", "pst_save" } } },
-			{ id = "line_parts", type = "line" },
 			{ id = "title_parts", type = "title", text = "ui_mcm_persistent_stalkers_title_parts", align = "l", clr = { 255, 196, 18, 18 } },
 			check("carry_money", true),
 			check("carry_rank", true),
@@ -36,6 +35,8 @@ function on_mcm_load()
 			check("carry_skill_tree", true),
 			check("carry_recipes", true),
 			check("death_strip", false),
+			{ id = "line_saves", type = "line" },
+			check("constant_saves", false),
 		},
 	}
 end
