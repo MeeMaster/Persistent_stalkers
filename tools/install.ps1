@@ -6,6 +6,8 @@
 #   powershell -ExecutionPolicy Bypass -File "D:\Code\Stalker mods\Persistent_stalkers\tools\install.ps1"
 #   ... -GammaDir E:\GAMMA -ProfileName GEM -SourceProfile G.A.M.M.A
 #   ... -WhatIf    lists what it would do
+#   ... -Romeo     the ROMEO skin, for the CLIKRAD ROMEO modpack's menu
+#                  (romeo\gamedata over gamedata); run without it to go back
 #
 # After switching branches, run it again: a file only on the other branch
 # stays in the install (files only in the install are left alone), so remove
@@ -23,6 +25,7 @@ param(
 	[string]$ProfileName = 'GEM',
 	[string]$SourceProfile = 'G.A.M.M.A',
 	[string]$ModName = 'Persistent_stalkers',
+	[switch]$Romeo,
 	[switch]$WhatIf
 )
 
@@ -44,13 +47,31 @@ if (-not (Test-Path (Join-Path $src 'gamedata'))) {
 
 # 1. Mod folder: hardlinks to the repo files (a copy if the drives differ).
 
-$files = @(Get-ChildItem -Path (Join-Path $src 'gamedata') -Recurse -File)
+#    With -Romeo, romeo\gamedata is laid over gamedata: its files take the
+#    place of the ones with the same path (the skin), the rest are added.
+
+$byRel = [ordered]@{}
+foreach ($f in @(Get-ChildItem -Path (Join-Path $src 'gamedata') -Recurse -File)) {
+	$byRel[$f.FullName.Substring($src.Length).TrimStart('\')] = $f
+}
 $meta = Join-Path $src 'meta.ini'
-if (Test-Path $meta) { $files += Get-Item $meta }
+if (Test-Path $meta) { $byRel['meta.ini'] = Get-Item $meta }
+if ($Romeo) {
+	$romeoRoot = Join-Path $src 'romeo'
+	if (-not (Test-Path (Join-Path $romeoRoot 'gamedata'))) {
+		throw "no romeo\gamedata folder in $src"
+	}
+	foreach ($f in @(Get-ChildItem -Path (Join-Path $romeoRoot 'gamedata') -Recurse -File)) {
+		$byRel[$f.FullName.Substring($romeoRoot.Length).TrimStart('\')] = $f
+	}
+	Write-Output 'skin: ROMEO (romeo\gamedata laid over gamedata)'
+} else {
+	Write-Output 'skin: default (-Romeo for the CLIKRAD ROMEO menu)'
+}
 $linked = 0
 $copied = 0
-foreach ($f in $files) {
-	$rel = $f.FullName.Substring($src.Length).TrimStart('\')
+foreach ($rel in $byRel.Keys) {
+	$f = $byRel[$rel]
 	$dst = Join-Path $dstMod $rel
 	if ($WhatIf) {
 		Write-Output "link $dst -> $($f.FullName)"

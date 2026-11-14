@@ -114,6 +114,7 @@ function class(name)
 end
 
 local XML_NODES = {}
+XML_FROM = {} -- node -> the file it was made from
 function CScriptXmlInit()
 	local x = {}
 	return setmetatable(x, { __index = function(t, k)
@@ -121,6 +122,7 @@ function CScriptXmlInit()
 		return function(_, node, parent)
 			local w = wnd(node)
 			XML_NODES[node] = w
+			XML_FROM[node] = x.file
 			if node == "menu:equip" then w.w, w.h = 240, 500 end
 			if node == "menu:bag" then w.x, w.w, w.h = 464, 280, 480 end
 			if node == "menu:row" then w.w, w.h = 184, 26 end
@@ -200,6 +202,7 @@ persistent_stalkers_state = {
 	cancel = function() end,
 	summary = function(c) return c and (tostring(#(c.items or {})) .. " items") or "nothing" end,
 }
+load_script(ROOT_V2, "persistent_stalkers_skin")
 local P = load_script(ROOT_V2, "persistent_stalkers_profile")
 local C = load_script(ROOT_V2, "persistent_stalkers")
 local M = load_script(ROOT_V2, "persistent_stalkers_menu")
@@ -230,7 +233,9 @@ for _, e in ipairs(t.gr) do
 end
 local mm = MM.main_menu()
 check(mm.pst_panel ~= nil, "the panel is attached")
-check(mm.shniaga.x == 10 or mm.shniaga.x ~= nil, "the options were moved")
+check(XML_NODES["options"] ~= nil, "the options were moved")
+check(XML_FROM["background"] == "ui_persistent_stalkers.xml", "default skin: our background")
+check(mm.pst_panel.skin.name == "default" and mm.pst_panel.bag ~= nil and mm.pst_panel.what ~= nil, "default skin: the full panel")
 check(not logged("could not be"), "no build errors")
 local panel = mm.pst_panel
 check(#panel.entries == 2 and panel.entries[1] == "none" and panel.entries[2] == "default", "rows: None, default")
@@ -448,5 +453,36 @@ start_game()
 CB["net_pst_world"][1](master_core_text.encode({ key = "k-2" }))
 for i = 1, 60 do NOW = NOW + 100; fire("actor_on_update") end
 check(#APPLIED == 5 and APPLIED[5].money == 41, "a rejoin into that key applies the snapshot")
+
+print("-- 11. the ROMEO skin (romeo\\gamedata)")
+end_game()
+HOST = true
+load_script(ROOT_V2:gsub("gamedata[/\\]scripts[/\\]$", "romeo/gamedata/scripts/"), "persistent_stalkers_skin")
+XML_NODES["options"] = nil
+XML_NODES["menu:background"] = nil
+mm = MM.main_menu()
+panel = mm.pst_panel
+check(panel and panel.skin.name == "romeo", "the ROMEO skin is taken")
+check(XML_NODES["menu:background"] == nil, "ROMEO: no frame behind the panel (a plain texture in a frame crashed)")
+check(XML_FROM["background"] == "ui_mm_main.xml", "ROMEO: the stock background (ROMEO patches it)")
+check(XML_NODES["options"] == nil, "ROMEO: the options are left where ROMEO puts them")
+check(XML_FROM["menu:panel"] == "ui_persistent_stalkers_romeo.xml", "ROMEO: its compact layout")
+check(#panel.rows == 5 and panel.bag == nil and panel.note == nil and panel.what == nil, "ROMEO: 5 rows, no backpack, note or what")
+check(panel.btn_new.tc.text == "New", "ROMEO: short button labels")
+click(mm, "pst_row_3")
+check(P.selected_profile() == "alt" and panel.chosen == "alt", "ROMEO: a click selects alt")
+local d = text_of("menu:details")
+check(d:find("Money: 41 RU") and d:find("Rank:") and not d:find("Reputation"), "ROMEO: short details: " .. d)
+check(#panel.cells == 3, "ROMEO: only what is equipped is drawn (rifle, outfit, belt): " .. #panel.cells)
+start_game()
+check(C.get_phase() == "live", "ROMEO: a game starts as alt")
+mm = MM.main_menu()
+check(mm.pst_panel.how == "pause" and mm.pst_panel.skin.name == "romeo", "ROMEO: the pause menu is compact too")
+DEV_DEBUG = true
+f8()
+check(M.is_open() and M.GUI.panel.skin.name == "default" and M.GUI.panel.bag ~= nil, "the debug F8 window keeps the full layout")
+M.GUI:OnKeyboard("DIK_ESCAPE", "WINDOW_KEY_PRESSED")
+DEV_DEBUG = false
+load_script(ROOT_V2, "persistent_stalkers_skin")
 
 print(string.format("%d checks, %d failed", checks, fails))
