@@ -1,0 +1,15 @@
+-- Persistent Stalkers: the skin of the main menu and its profile panel
+-- (AGENTS.md, "Skins").
+--
+-- This is the default skin: it changes nothing, so the menu takes
+-- persistent_stalkers_menu's DEFAULT_SKIN (G.A.M.M.A.'s background, the
+-- options on the right, the full panel left to middle). Another skin is a
+-- small mod that replaces this one file (and brings its own layout), such as
+-- romeo\gamedata in this repo, for the CLIKRAD ROMEO menu.
+--
+-- get() returns the fields to change, or nil for none; see DEFAULT_SKIN in
+-- persistent_stalkers_menu.script for what each one does.
+
+function get()
+	return nil
+end

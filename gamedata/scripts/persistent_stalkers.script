@@ -66,6 +66,7 @@ local DEFAULTS = {
 	carry_needs = true,
 	carry_mod_state = true,
 	carry_skill_tree = true,
+	carry_talents = true,
 	carry_recipes = true,
 	death_strip = false,
 }
@@ -137,6 +138,7 @@ local function parts()
 		needs = setting("carry_needs") == true,
 		mod_state = setting("carry_mod_state") == true,
 		skill_tree = setting("carry_skill_tree") == true,
+		talents = setting("carry_talents") == true,
 		recipes = setting("carry_recipes") == true,
 	}
 end
@@ -396,7 +398,20 @@ local function start_arrival(level_change)
 	arrival = { t = time_global(), level_change = level_change }
 end
 
+-- fake_start is where every new game boots before its ChangeLevel to the
+-- start, where a joining client waits for the host's level, and where the
+-- lobby is (persistent_stalkers_lobby): no character of anyone's is there,
+-- so nothing starts (phase idle: nothing read, applied or written; a save
+-- made there names no profile).
+local NOT_A_WORLD = "fake_start"
+
 local function on_first_update()
+	if level.name() == NOT_A_WORLD then
+		phase = "idle"
+		arrival = nil
+		log("on %s: not a world, nothing starts here", NOT_A_WORLD)
+		return
+	end
 	profile().pin()
 	local lc = take_marker()
 	if not is_host() then

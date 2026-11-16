@@ -78,8 +78,13 @@
 			<text font="letterica18" r="225" g="220" b="200"/>
 			<texture>ui_button_ordinary</texture>
 		</btn_close>
+		<!-- the main menu only: the lobby spike (persistent_stalkers_lobby.enter) -->
+		<btn_lobby x="18" y="528" width="184" height="30" check_mode="0" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_lobby>
 		<!-- under the list: the save mode -->
-		<note x="18" y="534" width="184" height="172" stretch="1" complex_mode="1">
+		<note x="18" y="566" width="184" height="140" stretch="1" complex_mode="1">
 			<text font="letterica16" r="170" g="170" b="160" align="l" vert_align="t" complex_mode="1"/>
 		</note>
 

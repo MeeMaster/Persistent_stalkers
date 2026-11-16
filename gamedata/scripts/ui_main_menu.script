@@ -18,15 +18,19 @@
 
 	Persistent Stalkers (branch menu_load): this is the main menu MCM ships (the stock
 	one with its MCM button), with three changes, all marked "Persistent
-	Stalkers" below:
+	Stalkers" below. The skin (persistent_stalkers_menu.skin(), AGENTS.md
+	"Skins") decides the first two:
 	- the background comes from ui_persistent_stalkers.xml: G.A.M.M.A.'s,
-	  with its logo and badges in the right column;
+	  with its logo and badges in the right column (skin own_background;
+	  otherwise ui_mm_main.xml's, as stock, which menu mods such as ROMEO
+	  patch);
 	- the game's options (the engine's button list, still read from
 	  ui_mm_main.xml, so other mods' buttons such as xrRazom's Connect stay)
-	  are moved to the right side of the screen;
-	- the profile panel (persistent_stalkers_menu.attach) sits left to middle:
-	  at the main menu it chooses the profile every game is played with, in a
-	  game (the pause menu) it shows the one in use.
+	  are moved to the right side of the screen (skin move_options; otherwise
+	  left where the menu mod puts them: ROMEO hides them and draws its own);
+	- the profile panel (persistent_stalkers_menu.attach) sits where the
+	  skin's layout puts it: at the main menu it chooses the profile every game
+	  is played with, in a game (the pause menu) it shows the one in use.
 	The class, its methods, the control names and the callbacks
 	(main_menu_on_init, main_menu_on_keyboard, main_menu_on_quit) are kept as
 	they are: MCM and xrRazom hook and patch them.
@@ -60,20 +64,32 @@ function main_menu:InitControls()
     local xml						= CScriptXmlInit()
     xml:ParseFile					("ui_mm_main.xml")
 
-	-- Persistent Stalkers: our background, and the options moved to the right
-	-- (the spot is the "options" node of our layout). If they cannot be
-	-- moved they stay in the middle, and the panel, which would cover them,
-	-- is left out.
+	-- Persistent Stalkers: the skin's background, and the options moved to the
+	-- right (the spot is the "options" node of our layout) when the skin says
+	-- so. If they cannot be moved they stay in the middle, and the panel,
+	-- which would cover them, is left out.
+	local ok_skin, pst_skin = pcall(function() return persistent_stalkers_menu.skin() end)
+	if not ok_skin or type(pst_skin) ~= "table" then
+		printf("[PersistentStalkers] ! main menu: no skin (%s); the default", tostring(pst_skin))
+		pst_skin = { own_background = true, move_options = true }
+	end
 	local pst_xml					= CScriptXmlInit()
 	pst_xml:ParseFile				(PST_XML)
-	pst_xml:InitStatic				("background", self)
+	if pst_skin.own_background then
+		pst_xml:InitStatic			("background", self)
+	else
+		xml:InitStatic				("background", self)
+	end
     self.shniaga					= xml:InitMMShniaga("shniaga_wnd",self);
-	local pst_moved, pst_err = pcall(function()
-		local spot = pst_xml:InitStatic("options", self)
-		local pos = spot:GetWndPos()
-		spot:Show(false)
-		self.shniaga:SetWndPos(vector2():set(pos.x, pos.y))
-	end)
+	local pst_moved, pst_err = true, nil
+	if pst_skin.move_options then
+		pst_moved, pst_err = pcall(function()
+			local spot = pst_xml:InitStatic("options", self)
+			local pos = spot:GetWndPos()
+			spot:Show(false)
+			self.shniaga:SetWndPos(vector2():set(pos.x, pos.y))
+		end)
+	end
 	if not pst_moved then
 		printf("[PersistentStalkers] ! main menu: the options could not be moved (%s); no profile panel", tostring(pst_err))
 	end

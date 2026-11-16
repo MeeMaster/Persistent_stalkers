@@ -57,6 +57,12 @@
 	<string id="ui_mcm_persistent_stalkers_carry_skill_tree_desc">
 		<text>Skill tree: the class, the perks bought, the XP of every class and the secondary craft are set to the profile's. Only when Skill tree is enabled; without it the profile keeps what it has.</text>
 	</string>
+	<string id="ui_mcm_persistent_stalkers_carry_talents">
+		<text>Classes and talents</text>
+	</string>
+	<string id="ui_mcm_persistent_stalkers_carry_talents_desc">
+		<text>Classes and Talents: the class, the talents learned, each tree's level, experience and points, and the collector, trophy and head hunter progress are set to the profile's. Cooldowns and the Kindred dogs stay with the save. Only when that mod is enabled; without it the profile keeps what it has.</text>
+	</string>
 	<string id="ui_mcm_persistent_stalkers_carry_recipes">
 		<text>Crafting recipes</text>
 	</string>

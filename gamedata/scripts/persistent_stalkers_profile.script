@@ -24,9 +24,10 @@ NONE = "none" -- "None": no profile at all, regular saves (never a file)
 local FILE_VERSION = 1
 local SNAPSHOTS_KEPT = 40 -- save keys kept per profile, newest first
 local SHRINK_BACKUPS = 3 -- .bak1 .. .bakN, see write_character
--- Character fields read only when their mod is enabled (Skill tree): a
--- write without one keeps the stored one (write_character).
-local KEEP_WHEN_ABSENT = { "skill_tree" }
+-- Character fields read only when their mod is enabled (Skill tree,
+-- Classes and Talents): a write without one keeps the stored one
+-- (write_character).
+local KEEP_WHEN_ABSENT = { "skill_tree", "talents" }
 
 local profile_in_use -- nil: the selected one (selected_profile)
 local data -- the active profile's file, as a table

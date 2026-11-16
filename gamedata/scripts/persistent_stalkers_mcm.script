@@ -33,6 +33,7 @@ function on_mcm_load()
 			check("carry_needs", true),
 			check("carry_mod_state", true),
 			check("carry_skill_tree", true),
+			check("carry_talents", true),
 			check("carry_recipes", true),
 			check("death_strip", false),
 			{ id = "line_saves", type = "line" },

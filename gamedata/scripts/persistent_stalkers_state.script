@@ -59,6 +59,17 @@ local MOD_STATE = {
 -- host's anomaly rolls. Everything else is the character's.
 local SKILL_TREE_WORLD = { xp_seen = true, xp_seq = true, boosted = true, rolled = true }
 
+-- Classes and Talents (xcvb, v0.56: talents_functions, talents_leveling).
+-- Its state is mostly script locals, so it is read through its own
+-- save_state into a fresh table and set through its load_state. These keys
+-- are the character's: the class, each talent's level, the four trees'
+-- level, experience and points, and three collections that grow with kills
+-- (collector stacks, monster trophies by kind, head hunter by faction).
+-- Cooldowns and durations (game-time tables) and the Kindred dogs (a squad
+-- in the world, the level it was last on) stay with the save.
+local TALENTS_KEYS = { "picked_class", "talents_t", "collector_var", "monster_hunter_trophies", "merc_head_hunter_t" }
+local TALENTS_LEVEL_KEYS = { "talent_levels" }
+
 local function log(fmt, ...)
 	printf("[PersistentStalkers] " .. fmt, ...)
 end
@@ -356,6 +367,115 @@ local function apply_skill_tree(t)
 	log("skill tree set: class %s, %s perks, %s general XP unspent", tostring(s.class), perks, tostring(xp.general))
 end
 
+-- Classes and Talents' two modules, or nil when that mod is not enabled.
+local function talents_mods()
+	local f, l = mod("talents_functions"), mod("talents_leveling")
+	if f and l and type(f.save_state) == "function" and type(f.load_state) == "function"
+		and type(l.save_state) == "function" and type(l.load_state) == "function" then
+		return f, l
+	end
+	return nil
+end
+
+-- What its save_state writes now (the live values; a table of its own).
+local function talents_state()
+	local f, l = talents_mods()
+	if not f then
+		return nil
+	end
+	local fs, ls = {}, {}
+	if not (pcall(f.save_state, fs) and pcall(l.save_state, ls)) then
+		return nil
+	end
+	return fs, ls
+end
+
+-- The Classes and Talents character (nil without the mod). Talents at
+-- level 0 are left out: its load_state sets every talent not given to 0.
+local function read_talents()
+	local fs, ls = talents_state()
+	if not fs then
+		return nil
+	end
+	local out = {}
+	for _, k in ipairs(TALENTS_KEYS) do
+		out[k] = copy(fs[k])
+	end
+	for _, k in ipairs(TALENTS_LEVEL_KEYS) do
+		out[k] = copy(ls[k])
+	end
+	if type(out.talents_t) == "table" then
+		for name, lvl in pairs(out.talents_t) do
+			if lvl == 0 then
+				out.talents_t[name] = nil
+			end
+		end
+	end
+	return out
+end
+
+-- Removes what the talents of the class in play add to the actor: item
+-- weights, and the speed and carry weight modifiers (as its respec does,
+-- without releasing the coin and the dogs, which are the world's). The
+-- modifiers are added again within a second by its own update, and the
+-- item weights by recalc_all_items_weight.
+local function clear_talent_effects(f)
+	pcall(f.remove_all_items_weight)
+	local sp, wt = mod("speed"), mod("weight")
+	if type(f.talents_table) ~= "table" then
+		return
+	end
+	for _, t in pairs(f.talents_table) do
+		for class_name, t2 in pairs(t) do
+			if sp and sp.remove_speed then pcall(sp.remove_speed, class_name .. "_special") end
+			if wt and wt.remove_weight then pcall(wt.remove_weight, class_name .. "_special") end
+			for talent in pairs(type(t2) == "table" and t2 or {}) do
+				if sp and sp.remove_speed then pcall(sp.remove_speed, talent) end
+				if wt and wt.remove_weight then pcall(wt.remove_weight, talent) end
+			end
+		end
+	end
+end
+
+-- Sets the character's keys of Classes and Talents to the profile's,
+-- keeping the world's (its own save_state gives them, so its load_state
+-- puts them back unchanged), then re-applies the item weights.
+local function apply_talents(t)
+	local f, l = talents_mods()
+	if type(t) ~= "table" or not f then
+		return
+	end
+	local fs, ls = talents_state()
+	if not fs then
+		log("! talents: its save_state failed")
+		return
+	end
+	for _, k in ipairs(TALENTS_KEYS) do
+		fs[k] = copy(t[k])
+	end
+	for _, k in ipairs(TALENTS_LEVEL_KEYS) do
+		ls[k] = copy(t[k])
+	end
+	clear_talent_effects(f)
+	local ok, err = pcall(f.load_state, fs)
+	if ok then
+		ok, err = pcall(l.load_state, ls)
+	end
+	if not ok then
+		log("! talents from the profile: %s", tostring(err))
+	end
+	pcall(f.recalc_all_items_weight)
+	local gui = mod("talents_gui")
+	if gui and gui.GUI then
+		pcall(function() gui.GUI:UpdateTalentsMenu() end)
+	end
+	local n = 0
+	for _, lvl in pairs(type(t.talents_t) == "table" and t.talents_t or {}) do
+		if type(lvl) == "number" then n = n + lvl end
+	end
+	log("talents set: class %s, %s talent points spent", tostring(f.picked_class), n)
+end
+
 -- Recipe sections whose encyclopedia note is unlocked (G.A.M.M.A.'s
 -- workshop: a recipe is known when "encyclopedia__notes_<recipe>" is).
 local recipe_sections
@@ -417,6 +537,7 @@ function read()
 		needs = read_needs(),
 		mod_state = read_mod_state(),
 		skill_tree = read_skill_tree(),
+		talents = read_talents(),
 		recipes = read_recipes(),
 	}
 end
@@ -691,6 +812,9 @@ local function apply_stats(c, parts, report)
 	end
 	if parts.skill_tree then
 		apply_skill_tree(c.skill_tree)
+	end
+	if parts.talents then
+		apply_talents(c.talents)
 	end
 	if parts.recipes then
 		report.recipes = apply_recipes(c.recipes)

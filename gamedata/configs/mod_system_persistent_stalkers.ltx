@@ -1,0 +1,7 @@
+; Persistent Stalkers: the lobby's camera (persistent_stalkers_lobby.script) is the engine's
+; free look (level.set_active_cam(2)), which starts halfway between the two lim_zoom values.
+; G.A.M.M.A.: 0.4, 10 (starts 5.2 m out). 0.4, 6.6: starts 3.5 m out. Read when the actor is
+; made: a change needs a game restart. Also caps free look's zoom-out in play at 6.6 m.
+
+![actor_free_cam]
+lim_zoom                                 = 0.4, 6.6
