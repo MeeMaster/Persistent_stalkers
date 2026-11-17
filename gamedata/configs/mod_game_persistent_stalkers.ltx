@@ -1,0 +1,10 @@
+; Persistent Stalkers (DLTX on game.ltx): the lobby level, fake_start, plays one track.
+; G.A.M.M.A. Soundtrack gives fake_start every music list (fake_start_musics), about 50
+; tracks the engine opens when the level loads. fake_start is used only by the lobby and,
+; for a moment, by every new game on its way to the start map, so this touches no real level.
+
+[ps_lobby_musics]
+music\level\ambientmusicpack\accg_quiet_days_on_earth = 6, 19, 0.30, 20, 40
+
+![fake_start]
+music_tracks = ps_lobby_musics

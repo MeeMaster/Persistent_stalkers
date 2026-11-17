@@ -1,0 +1,25 @@
+-- Persistent Stalkers: the skin of the main menu and its profile panel
+-- (AGENTS.md, "Skins").
+--
+-- This is the default skin of the main and pause menus: a profile box on
+-- the left with the list and the inventory, and the game's options in the
+-- right half with no frame of their own (ui_persistent_stalkers.xml). The
+-- debug F8 window does not use get(): it keeps the full loadout. Another skin is a
+-- small mod that replaces this one file (and brings its own layout), such as
+-- romeo\gamedata in this repo, for the CLIKRAD ROMEO menu.
+--
+-- get() returns the fields to change, or nil for none; see DEFAULT_SKIN in
+-- persistent_stalkers_menu.script for what each one does.
+
+function get()
+	return {
+		layout = "ui_persistent_stalkers.xml",
+		backpack = true,
+		bag_stay = true, -- the backpack stays under the list, not beside the column
+		details = false,
+		note = false,
+		what = false,
+		compact = true, -- "New" / "Remove"
+		rows = 8,
+	}
+end

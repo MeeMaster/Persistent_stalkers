@@ -1,0 +1,32 @@
+-- Persistent Stalkers: the ROMEO skin (AGENTS.md, "Skins"). For the
+-- CLIKRAD ROMEO modpack's menu (its "CLIKRAD ROMEO Menu - Victor" mod).
+--
+-- Installed as its own small mod above Persistent_stalkers
+-- (tools\install.ps1 -Romeo), it replaces the default skin file. ROMEO draws
+-- a video across the top half of the menu and its own button column on the
+-- left, and patches ui_mm_main.xml's background; so here:
+--   own_background = false  ui_mm_main.xml's background, ROMEO's art
+--   move_options = false    the game's option list is left where ROMEO
+--                           parks it (off screen: its own buttons replace it)
+--   layout                  ui_persistent_stalkers_romeo.xml: a compact panel
+--                           in the lower right, below ROMEO's logo and right
+--                           of its poster
+--   no backpack, note or "what" line; short details; a dark name line for
+--   ROMEO's light background.
+
+function get()
+	return {
+		name = "romeo",
+		own_background = false,
+		move_options = false,
+		layout = "ui_persistent_stalkers_romeo.xml",
+		lobby = false, -- no "Enter the lobby" button in the compact panel
+		frame = false, -- nothing behind the panel: ROMEO's background shows
+		rows = 5,
+		backpack = false,
+		note = false,
+		what = false,
+		compact = true,
+		head = "%c[255,20,20,20]",
+	}
+end

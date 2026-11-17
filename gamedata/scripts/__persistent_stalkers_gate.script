@@ -1,0 +1,25 @@
+-- Persistent Stalkers: the lobby's script gate (AGENTS.md, "The lobby",
+-- "Scripts not started").
+--
+-- Named to sort first: axr_main.on_game_start lists the scripts by name and
+-- loads them in that order, then starts them in that order. So this file runs
+-- before any other script is loaded by that loop, and its on_game_start before
+-- any other. In a lobby game the skipped mods' scripts are not loaded or
+-- started, and every other on_game_start runs in a pcall
+-- (persistent_stalkers_lobby_boot.gate_begin / gate_start). In any other game
+-- it only puts back a new game's choices carried from the lobby. The game's
+-- own axr_main.script is not replaced.
+
+do
+	local ok, err = pcall(function() persistent_stalkers_lobby_boot.gate_begin() end)
+	if not ok then
+		printf("![PersistentStalkers] lobby: gate: %s", tostring(err))
+	end
+end
+
+function on_game_start()
+	local ok, err = pcall(function() persistent_stalkers_lobby_boot.gate_start() end)
+	if not ok then
+		printf("![PersistentStalkers] lobby: gate: %s", tostring(err))
+	end
+end

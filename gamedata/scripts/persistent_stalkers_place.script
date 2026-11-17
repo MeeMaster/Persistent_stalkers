@@ -1,0 +1,368 @@
+-- Persistent Stalkers: places in the world, for the lobby (AGENTS.md, "The
+-- lobby", "Places"). The way Private Backrooms places its doors and rooms
+-- (private_backrooms.facing, private_backrooms_rooms' frames): a position and
+-- a yaw in degrees, 0 north (+z), 90 east (+x), and things set relative to
+-- that frame as right, up, forward (m) and a yaw and pitch of their own.
+--
+-- A place is a section of mod_system_persistent_stalkers.ltx:
+--
+--   [ps_lobby_place_<name>]
+--   map = l01_escape                    the level (the spawn is built for it)
+--   host_position = x, y, z             where the host stands
+--   host_rotation = 180                 degrees: the way the host faces; the
+--                                       other slots and the cameras turn with it
+--   camera = right, up, forward, yaw, pitch
+--                                       the lineup camera, from the host's slot
+--   close = right, up, forward, yaw, pitch
+--                                       the close-up, from each slot
+--   close_3 = ...                       one slot's own close-up (optional)
+--
+-- Camera yaw is relative to the slot's facing: 0 looks the way the host
+-- looks, 180 back at the host. Pitch: degrees, up positive.
+--
+-- Console, with -dbg:
+--   run_string persistent_stalkers_place.here()
+--       logs this map, your position and the way you face, and a place
+--       section with you as the host
+--   run_string persistent_stalkers_place.add("name")
+--       writes that section (the current place's cameras copied) and selects it
+--   run_string persistent_stalkers_place.choose("name")
+--       selects a place in the config
+
+local SECTION = "persistent_stalkers_lobby"
+local PREFIX = "ps_lobby_place_"
+local CONFIG = "mod_system_persistent_stalkers.ltx"
+
+-- LuaJIT (the game) has math.atan2; Lua 5.3 (the checks) has math.atan(y, x).
+local atan2 = math.atan2 or math.atan
+
+local function log(fmt, ...)
+	printf("[PersistentStalkers] place: " .. string.format(fmt, ...))
+end
+
+-------------------------------------------------------------------------------
+-- Frames
+
+-- yaw: degrees, the way something faces, 0 north (+z), 90 east (+x).
+function facing(yaw)
+	local r = math.rad(yaw or 0)
+	return math.sin(r), math.cos(r)
+end
+
+-- The yaw (degrees, 0..360) of a direction on the ground.
+function yaw_of(x, z)
+	return math.deg(atan2(x, z)) % 360
+end
+
+-- A frame: origin, facing f and right r on the ground (Private Backrooms:
+-- fx = sin, fz = cos, rx = cos, rz = -sin).
+function frame(x, y, z, yaw)
+	local fx, fz = facing(yaw)
+	return { x = x, y = y, z = z, yaw = yaw % 360, fx = fx, fz = fz, rx = fz, rz = -fx }
+end
+
+-- right, up, forward in the frame -> world x, y, z
+function to_world(fr, right, up, forward)
+	return fr.x + fr.rx * right + fr.fx * forward, fr.y + up, fr.z + fr.rz * right + fr.fz * forward
+end
+
+-- world x, y, z -> right, up, forward in the frame
+function to_local(fr, x, y, z)
+	local dx, dz = x - fr.x, z - fr.z
+	return dx * fr.rx + dz * fr.rz, y - fr.y, dx * fr.fx + dz * fr.fz
+end
+
+-- A yaw and pitch relative to the frame -> a world direction (unit).
+function dir_world(fr, yaw, pitch)
+	local a, p = math.rad(yaw or 0), math.rad(pitch or 0)
+	local lr, lf, up = math.sin(a) * math.cos(p), math.cos(a) * math.cos(p), math.sin(p)
+	return fr.rx * lr + fr.fx * lf, up, fr.rz * lr + fr.fz * lf
+end
+
+-- A world direction -> yaw and pitch relative to the frame (degrees).
+function dir_local(fr, x, y, z)
+	local lr, lf = x * fr.rx + z * fr.rz, x * fr.fx + z * fr.fz
+	local len = math.sqrt(x * x + y * y + z * z)
+	local p = len > 0 and math.deg(math.asin(math.max(-1, math.min(1, y / len)))) or 0
+	return yaw_of(lr, lf), p
+end
+
+-- A pose (right, up, forward, yaw, pitch) in the frame -> world position and
+-- the engine's heading and pitch (vector:getH / getP of the direction), as
+-- level.set_cam_custom_position_direction takes them.
+function pose_world(fr, pose)
+	local x, y, z = to_world(fr, pose[1], pose[2], pose[3])
+	local dx, dy, dz = dir_world(fr, pose[4], pose[5])
+	local d = vector():set(dx, dy, dz)
+	return { x = x, y = y, z = z, h = d:getH(), p = d:getP() }
+end
+
+-- A world position and a direction vector -> a pose in the frame.
+function pose_local(fr, pos, dir)
+	local r, u, f = to_local(fr, pos.x, pos.y, pos.z)
+	local yaw, pitch = dir_local(fr, dir.x, dir.y, dir.z)
+	return { r, u, f, yaw, pitch }
+end
+
+-------------------------------------------------------------------------------
+-- The config
+
+function path()
+	return getFS():update_path("$game_config$", CONFIG)
+end
+
+-- key = value lines under [section]. Comments and blanks are skipped.
+function parse(text)
+	local sec, out = nil, {}
+	for line in ((text or "") .. "\n"):gmatch("(.-)\r?\n") do
+		local name = line:match("^%s*!*%[([^%]]+)%]")
+		if name then
+			sec = name
+			out[sec] = out[sec] or {}
+		elseif sec and not line:match("^%s*;") and not line:match("^%s*$") then
+			local k, v = line:match("^%s*([%w_]+)%s*=%s*(.-)%s*$")
+			if k and v ~= "" then
+				out[sec][k] = v:gsub("%s*;.*$", "")
+			end
+		end
+	end
+	return out
+end
+
+function numbers(text)
+	local t = {}
+	for s in tostring(text or ""):gmatch("[^,]+") do
+		local n = tonumber((s:gsub("^%s+", ""):gsub("%s+$", "")))
+		if n == nil then
+			return nil
+		end
+		t[#t + 1] = n
+	end
+	return t
+end
+
+function read()
+	local text = master_core_text.read_file(path())
+	if not text or text == "" then
+		return nil
+	end
+	return parse(text), text
+end
+
+-- A place from the parsed config, or nil and why.
+function place_of(all, name)
+	local sec = all and name and all[PREFIX .. name]
+	if not sec then
+		return nil, "no section [" .. PREFIX .. tostring(name) .. "]"
+	end
+	local pos, rot = numbers(sec.host_position), tonumber(sec.host_rotation)
+	if not (pos and #pos == 3 and rot and type(sec.map) == "string" and sec.map ~= "") then
+		return nil, "[" .. PREFIX .. name .. "] needs map, host_position (x, y, z) and host_rotation (degrees)"
+	end
+	local p = { name = name, map = sec.map, x = pos[1], y = pos[2], z = pos[3], rot = rot % 360, close_n = {} }
+	local function pose(key)
+		local t = numbers(sec[key])
+		return t and #t == 5 and t or nil
+	end
+	local sp = tonumber(sec.spacing)
+	p.spacing = sp and sp > 0 and sp or nil -- this place's own; else [persistent_stalkers_lobby] spacing
+	p.camera = pose("camera")
+	p.close = pose("close")
+	for k in pairs(sec) do
+		local n = k:match("^close_(%d+)$")
+		if n then
+			p.close_n[tonumber(n)] = pose(k)
+		end
+	end
+	return p
+end
+
+-- The selected place's name ([persistent_stalkers_lobby] place).
+function selected(all)
+	local sec = all and all[SECTION]
+	return sec and sec.place ~= "" and sec.place or nil
+end
+
+-- The place for this map: the selected one when it is on this map, else the
+-- first on this map (by name). Nil when none is.
+function for_map(all, map)
+	local p = place_of(all, selected(all))
+	if p and p.map == map then
+		return p
+	end
+	local names = {}
+	for sec in pairs(all or {}) do
+		local n = sec:match("^" .. PREFIX .. "(.+)$")
+		if n then
+			names[#names + 1] = n
+		end
+	end
+	table.sort(names)
+	for _, n in ipairs(names) do
+		local q = place_of(all, n)
+		if q and q.map == map then
+			return q
+		end
+	end
+	return nil
+end
+
+-- Every map a place is on.
+function maps(all)
+	local out = {}
+	for sec in pairs(all or {}) do
+		local n = sec:match("^" .. PREFIX .. "(.+)$")
+		local q = n and place_of(all, n)
+		if q then
+			out[q.map] = true
+		end
+	end
+	return out
+end
+
+-- The text with section.key set to value: the line replaced where it is, or
+-- added at the end of the section (the section added at the end of the file
+-- when it is not there). Comments and everything else stay.
+function set_key(text, section, key, value)
+	local lines = {}
+	for line in ((text or "") .. "\n"):gmatch("(.-)\r?\n") do
+		lines[#lines + 1] = line
+	end
+	if lines[#lines] == "" then
+		lines[#lines] = nil
+	end
+	local sec, last_in, found = nil, nil, false
+	for i, line in ipairs(lines) do
+		local name = line:match("^%s*!*%[([^%]]+)%]")
+		if name then
+			sec = name
+			if name == section then
+				last_in = i
+			end
+		elseif sec == section then
+			local k = line:match("^%s*([%w_]+)%s*=")
+			if k == key then
+				lines[i] = key .. " = " .. value
+				found = true
+				break
+			end
+			if not line:match("^%s*$") then
+				last_in = i
+			end
+		end
+	end
+	if not found then
+		if last_in then
+			table.insert(lines, last_in + 1, key .. " = " .. value)
+		else
+			if #lines > 0 and lines[#lines] ~= "" then
+				lines[#lines + 1] = ""
+			end
+			lines[#lines + 1] = "[" .. section .. "]"
+			lines[#lines + 1] = key .. " = " .. value
+		end
+	end
+	return table.concat(lines, "\r\n") .. "\r\n"
+end
+
+-- Writes keys ({ { section, key, value }, ... }) into the config.
+function write(keys)
+	local text = master_core_text.read_file(path()) or ""
+	for _, k in ipairs(keys) do
+		text = set_key(text, k[1], k[2], k[3])
+	end
+	return master_core_text.write_file(path(), text)
+end
+
+function fmt(n)
+	n = math.floor(n * 1000 + 0.5) / 1000 -- 3 decimals, and no "-0"
+	if n == 0 then
+		return "0"
+	end
+	if n == math.floor(n) and math.abs(n) < 1e9 then
+		return string.format("%d", n)
+	end
+	return (string.format("%.3f", n):gsub("0+$", ""):gsub("%.$", ""))
+end
+
+function list(t)
+	local out = {}
+	for i, n in ipairs(t) do
+		out[i] = fmt(n)
+	end
+	return table.concat(out, ", ")
+end
+
+-------------------------------------------------------------------------------
+-- Console
+
+local function you()
+	local pos, d = db.actor:position(), db.actor:direction()
+	return pos, yaw_of(d.x, d.z)
+end
+
+-- Logs this map, your position and the way you face, and a place section with
+-- you as the host: stand where the host should stand, facing where the
+-- camera should be.
+function here()
+	if not (level.present() and db.actor) then
+		log("! here: in a game")
+		return
+	end
+	local pos, yaw = you()
+	log("here: map %s, %s, yaw %s", level.name(), list({ pos.x, pos.y, pos.z }), fmt(math.floor(yaw + 0.5)))
+	log("[%s<name>] map = %s; host_position = %s; host_rotation = %s", PREFIX, level.name(),
+		list({ pos.x, pos.y, pos.z }), fmt(math.floor(yaw + 0.5)))
+	return pos, yaw
+end
+
+-- Writes a place named name with you as the host (this map, your position,
+-- the way you face), the cameras copied from the place now selected, and
+-- selects it. The lobby's spawn is built for the selected place: rebuild it
+-- (tools/build_lobby_spawn.sh) when the map changed.
+function add(name)
+	if type(name) ~= "string" or not name:match("^[%w_]+$") then
+		log("! add: a name of letters, digits and _")
+		return false
+	end
+	if not (level.present() and db.actor) then
+		log("! add: in a game")
+		return false
+	end
+	local pos, yaw = you()
+	local all = read()
+	local old = all and place_of(all, selected(all))
+	local sec = PREFIX .. name
+	local keys = {
+		{ sec, "map", level.name() },
+		{ sec, "host_position", list({ pos.x, pos.y, pos.z }) },
+		{ sec, "host_rotation", fmt(math.floor(yaw + 0.5)) },
+	}
+	if old and old.camera then
+		keys[#keys + 1] = { sec, "camera", list(old.camera) }
+	end
+	if old and old.close then
+		keys[#keys + 1] = { sec, "close", list(old.close) }
+	end
+	keys[#keys + 1] = { SECTION, "place", name }
+	if not write(keys) then
+		log("! add: the config could not be written")
+		return false
+	end
+	log("place %s written and selected: %s, %s, yaw %s (the lobby's spawn: tools/build_lobby_spawn.sh)", name,
+		level.name(), list({ pos.x, pos.y, pos.z }), fmt(math.floor(yaw + 0.5)))
+	return true
+end
+
+-- Selects a place that is in the config.
+function choose(name)
+	local all = read()
+	local p, why = place_of(all, name)
+	if not p then
+		log("! choose: %s", why)
+		return false
+	end
+	write({ { SECTION, "place", name } })
+	log("place %s selected (%s); the lobby's spawn: tools/build_lobby_spawn.sh", name, p.map)
+	return true
+end

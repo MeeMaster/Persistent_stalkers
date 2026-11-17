@@ -1,0 +1,86 @@
+<w>
+	<!-- The debug switch window's panel (F8, persistent_stalkers_menu DEFAULT_SKIN).
+	     The main and pause menus use ui_persistent_stalkers.xml instead: a compact
+	     list on the left half, no inventory. Positions are 1024x768 units. -->
+	<menu>
+		<panel x="12" y="12" width="756" height="720"/>
+		<background x="0" y="0" width="756" height="720" stretch="1">
+			<texture>ui_inGame2_hint_wnd_main_window</texture>
+		</background>
+		<title x="20" y="10" width="716" height="30" stretch="1">
+			<text font="letterica25" r="230" g="220" b="190" align="l" vert_align="c"/>
+		</title>
+		<list_title x="18" y="46" width="184" height="22" stretch="1">
+			<text font="letterica18" r="200" g="200" b="200" align="l" vert_align="c"/>
+		</list_title>
+		<row x="18" y="72" width="184" height="26" stretch="1">
+			<texture>ui_button_ordinary</texture>
+		</row>
+		<row_text x="0" y="0" width="10" height="26" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200" align="l" vert_align="c"/>
+		</row_text>
+		<btn_up x="18" y="422" width="90" height="24" check_mode="0" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_up>
+		<btn_down x="112" y="422" width="90" height="24" check_mode="0" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_down>
+		<btn_new x="18" y="456" width="184" height="30" check_mode="0" stretch="1">
+			<text font="letterica18" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_new>
+		<btn_remove x="18" y="492" width="184" height="30" check_mode="0" stretch="1">
+			<text font="letterica18" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_remove>
+		<btn_switch x="18" y="456" width="184" height="30" check_mode="0" stretch="1">
+			<text font="letterica18" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_switch>
+		<btn_close x="18" y="492" width="184" height="30" check_mode="0" stretch="1">
+			<text font="letterica18" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_close>
+		<note x="18" y="566" width="184" height="140" stretch="1" complex_mode="1">
+			<text font="letterica16" r="170" g="170" b="160" align="l" vert_align="t" complex_mode="1"/>
+		</note>
+		<details x="214" y="46" width="530" height="76" stretch="1" complex_mode="1">
+			<text font="letterica16" r="210" g="210" b="210" align="l" vert_align="t" complex_mode="1"/>
+		</details>
+		<equip x="214" y="128" width="240" height="500" stretch="1"/>
+		<inv_back x="0" y="0" width="10" height="10" stretch="1">
+			<texture>ui_inGame2_inventory_back</texture>
+		</inv_back>
+		<helmet_blocker x="0" y="0" width="10" height="10" stretch="1">
+			<texture>ui_inGame2_helmet_blocker</texture>
+		</helmet_blocker>
+		<artefact_blocker x="0" y="0" width="10" height="10" stretch="1">
+			<texture>ui_inGame2_artefact_blocker</texture>
+		</artefact_blocker>
+		<slot_bar x="0" y="0" width="10" height="6" stretch="1">
+			<texture r="142" g="149" b="149">ui_inGame2_inventory_status_bar</texture>
+		</slot_bar>
+		<bag_caption x="464" y="128" width="280" height="18" stretch="1">
+			<text font="letterica16" r="170" g="170" b="160" align="l" vert_align="c"/>
+		</bag_caption>
+		<bag x="464" y="148" width="280" height="480" stretch="1">
+			<texture r="12" g="14" b="12" a="160">ui_inGame2_white_rect</texture>
+		</bag>
+		<layer x="0" y="0" width="10" height="10"/>
+		<slot_bg x="0" y="0" width="10" height="10" stretch="1">
+			<texture r="40" g="42" b="38" a="200">ui_inGame2_white_rect</texture>
+		</slot_bg>
+		<icon x="0" y="0" width="10" height="10" stretch="1"/>
+		<bar x="0" y="0" width="10" height="2" stretch="1">
+			<texture>ui_inGame2_white_rect</texture>
+		</bar>
+		<count x="0" y="0" width="30" height="13" stretch="1">
+			<text font="letterica16" r="235" g="235" b="225" align="r" vert_align="c"/>
+		</count>
+		<what x="214" y="636" width="530" height="74" stretch="1" complex_mode="1">
+			<text font="letterica16" r="210" g="210" b="210" align="l" vert_align="t" complex_mode="1"/>
+		</what>
+	</menu>
+</w>

@@ -1,0 +1,76 @@
+<w>
+	<!-- The ROMEO skin's profile panel (persistent_stalkers_menu.script, romeo\gamedata's
+	     persistent_stalkers_skin.script). Positions are 1024x768 units, the panel's children
+	     relative to it.
+	     ROMEO's menu (16:9, measured from a screenshot): the video banner y 20-352; its button
+	     column x 101-350 from y 386; the poster x 494-686, y 423-730; the ROMEO logo x 873-996,
+	     y 396-453; Credits from x 931, y 724. The panel fills what is left on the right of the
+	     lower half: x 712-1008, y 456-722.
+	     Left part: the name and three facts, the rows (5, Up / Down page), New and Remove. Right
+	     part: the equipment column (its width follows from its height and the screen: about 120
+	     units on 16:9, 156 on 4:3). No backpack. Dark text for ROMEO's light background; rows
+	     and buttons are the stock dark buttons with light text. -->
+	<menu>
+		<panel x="712" y="456" width="296" height="266"/>
+		<!-- no background node: nothing is drawn behind the panel (skin frame = false), so
+		     ROMEO's background shows. A frame needs a frame texture; the plain white rect
+		     given here first crashed the game. -->
+		<title x="0" y="0" width="296" height="18" stretch="1">
+			<text font="letterica18" r="20" g="20" b="20" align="l" vert_align="c"/>
+		</title>
+		<details x="0" y="22" width="156" height="68" stretch="1" complex_mode="1">
+			<text font="letterica16" r="40" g="40" b="40" align="l" vert_align="t" complex_mode="1"/>
+		</details>
+		<list_title x="0" y="92" width="156" height="16" stretch="1">
+			<text font="letterica16" r="70" g="70" b="70" align="l" vert_align="c"/>
+		</list_title>
+		<row x="0" y="110" width="156" height="20" stretch="1">
+			<texture>ui_button_ordinary</texture>
+		</row>
+		<row_text x="0" y="0" width="10" height="20" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200" align="l" vert_align="c"/>
+		</row_text>
+		<btn_up x="0" y="226" width="76" height="18" check_mode="0" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_up>
+		<btn_down x="80" y="226" width="76" height="18" check_mode="0" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_down>
+		<btn_new x="0" y="248" width="76" height="18" check_mode="0" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_new>
+		<btn_remove x="80" y="248" width="76" height="18" check_mode="0" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_remove>
+
+		<!-- the equipment column, as in the full layout; the script sets its width -->
+		<equip x="164" y="22" width="120" height="244" stretch="1"/>
+		<inv_back x="0" y="0" width="10" height="10" stretch="1">
+			<texture>ui_inGame2_inventory_back</texture>
+		</inv_back>
+		<helmet_blocker x="0" y="0" width="10" height="10" stretch="1">
+			<texture>ui_inGame2_helmet_blocker</texture>
+		</helmet_blocker>
+		<artefact_blocker x="0" y="0" width="10" height="10" stretch="1">
+			<texture>ui_inGame2_artefact_blocker</texture>
+		</artefact_blocker>
+		<slot_bar x="0" y="0" width="10" height="6" stretch="1">
+			<texture r="142" g="149" b="149">ui_inGame2_inventory_status_bar</texture>
+		</slot_bar>
+		<layer x="0" y="0" width="10" height="10"/>
+		<slot_bg x="0" y="0" width="10" height="10" stretch="1">
+			<texture r="40" g="42" b="38" a="200">ui_inGame2_white_rect</texture>
+		</slot_bg>
+		<icon x="0" y="0" width="10" height="10" stretch="1"/>
+		<bar x="0" y="0" width="10" height="2" stretch="1">
+			<texture>ui_inGame2_white_rect</texture>
+		</bar>
+		<count x="0" y="0" width="30" height="13" stretch="1">
+			<text font="letterica16" r="235" g="235" b="225" align="r" vert_align="c"/>
+		</count>
+	</menu>
+</w>

@@ -1,0 +1,169 @@
+-- Persistent Stalkers: joining the lobby, and joining a game (AGENTS.md, "The
+-- lobby": "A client joining the lobby", "Joining a save that does not know
+-- the client").
+--
+-- A joining client used to boot a full game: every mod's scripts started
+-- (Skill tree asked for a class) and xrRazom's gear screen asked for a
+-- loadout. The host now says "this is a lobby" through xrRazom's MCM overlay,
+-- which a client gets on connecting, before SHOW_START and before its own
+-- load: the host sets LOBBY_KEY while its lobby runs. A connected client that
+-- sees it
+--   - skips the gear screen: the main menu's ShowFactionUI sends the
+--     character select at once (a loner, no money, no kit: the lobby
+--     releases the kit anyway);
+--   - writes a client marker when its load starts (the boot's console hook),
+--     so its new game skips the mods' scripts and isolates the callbacks as
+--     the host's lobby game does, and the core stays idle.
+-- A client the loaded save does not know (the host's xrRazom sends it the
+-- gear screen) skips it too when its selected profile has a character: the
+-- profile's faction, no kit, and the arrival applies the profile. None, or an
+-- empty profile (it adopts what it arrives with), keeps the gear screen.
+-- xrRazom's player markers are drawn with the HUD off: the lobby turns them
+-- off and back on.
+
+LOBBY_KEY = "persistent_stalkers/lobby_host"
+
+local PLATE_CVARS = { "xrr_show_names", "xrr_show_marks", "xrr_show_players_hp", "xrr_show_net_health" }
+local PLATE_FILE = "persistent_stalkers_lobby_cvars.txt"
+
+local function log(fmt, ...)
+	local ok, text = pcall(string.format, fmt, ...)
+	printf("%s", "[PersistentStalkers] lobby: " .. (ok and text or fmt))
+end
+
+local function boot()
+	return persistent_stalkers_lobby_boot
+end
+
+local function has_xrr()
+	return rawget(_G, "XrrNet") ~= nil and rawget(_G, "XrrMcm") ~= nil
+end
+
+-- Connected to a host, not hosting.
+function connected_client()
+	if not rawget(_G, "XrrNet") then
+		return false
+	end
+	local ok, v = pcall(function()
+		local net = XrrNet()
+		return net and net:IsConnected() and not net:IsHost()
+	end)
+	return ok and v == true
+end
+
+-- Host: say so to the clients (and take it back when the lobby stops).
+function announce(on)
+	if not has_xrr() then
+		return false
+	end
+	local ok, err = pcall(function()
+		local mcm = XrrMcm()
+		if on then
+			mcm:AuthoritySetBool(LOBBY_KEY, true)
+		else
+			mcm:AuthorityRemove(LOBBY_KEY)
+		end
+		mcm:AuthorityFlush()
+	end)
+	if not ok then
+		log("! lobby flag for the clients: %s", tostring(err))
+	end
+	return ok
+end
+
+-- Client: connected to a host whose lobby runs.
+function joining_lobby()
+	if not (has_xrr() and connected_client()) then
+		return false
+	end
+	local ok, v = pcall(function()
+		local mcm = XrrMcm()
+		return mcm:OverlayTag(LOBBY_KEY) >= 0 and mcm:OverlayBool(LOBBY_KEY) == true
+	end)
+	return ok and v == true
+end
+
+-- The marker a joining client writes for its own new game. The prompt is
+-- off first: the client's load, and the host's save after it, must not wait
+-- for a key.
+function write_client_marker()
+	local b = boot()
+	local kp = b.keypress_hold()
+	local ok = b.write_marker({ client = true, kp = kp or nil })
+	log("joining the lobby: this game skips the mods' scripts (%s)", ok and "marker written" or "! marker not written")
+	return ok
+end
+
+-- xrRazom's gear screen. Installed from the main menu's update, after
+-- xrRazom has put its own ShowFactionUI on the class.
+local faction_wrap = nil
+function guard_faction_ui()
+	local mod = rawget(_G, "ui_main_menu")
+	local cls = mod and mod.main_menu
+	if not cls or cls.ShowFactionUI == nil or cls.ShowFactionUI == faction_wrap then
+		return
+	end
+	local orig = cls.ShowFactionUI
+	faction_wrap = function(self, ...)
+		local why, faction
+		if joining_lobby() then
+			why, faction = "joining the lobby", "stalker"
+		elseif connected_client() then
+			-- the selected profile with a character (the new game screen's rule)
+			local lock = persistent_stalkers_newgame.profile_lock()
+			if lock then
+				why, faction = "joining as " .. lock.name .. " (applied on arrival)", lock.faction
+			end
+		end
+		if why then
+			local ok, err = pcall(function() XrrPlayers():SendCharacterSelect(faction, 0, "") end)
+			if ok then
+				log("%s: the gear screen is skipped (%s, no kit)", why, faction)
+				return
+			end
+			log("! %s: character select failed (%s), the gear screen opens", why, tostring(err))
+		end
+		return orig(self, ...)
+	end
+	cls.ShowFactionUI = faction_wrap
+end
+
+-- The markers' values found are kept in a file, so a crash in the lobby
+-- still gets them back at the main menu.
+function plates_off()
+	local was, n = {}, 0
+	for _, c in ipairs(PLATE_CVARS) do
+		local ok, v = pcall(get_console_cmd, 1, c)
+		if ok and v == true then
+			was[c] = true
+			n = n + 1
+			pcall(exec_console_cmd, c .. " off")
+		end
+	end
+	if n > 0 then
+		master_core_text.write_file(boot().app_path(PLATE_FILE), master_core_text.encode(was))
+		log("player markers off for the lobby (%d settings)", n)
+	end
+	return n
+end
+
+function plates_back()
+	local path = boot().app_path(PLATE_FILE)
+	local text = master_core_text.read_file(path)
+	if not text or text == "" then
+		return 0
+	end
+	master_core_text.write_file(path, "")
+	local ok, t = pcall(master_core_text.decode, text)
+	local n = 0
+	if ok and type(t) == "table" then
+		for c, on in pairs(t) do
+			if on == true then
+				pcall(exec_console_cmd, c .. " on")
+				n = n + 1
+			end
+		end
+	end
+	log("player markers back on (%d settings)", n)
+	return n
+end

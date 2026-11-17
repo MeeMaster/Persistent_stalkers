@@ -2,8 +2,9 @@
 -- main menu").
 --
 -- ui_main_menu.script attaches it (attach(mm)) each time the menu is made:
--- at the main menu, and as the pause menu in a game. It sits left to middle;
--- the game's options are on the right.
+-- at the main menu, and as the pause menu in a game. On those, the default
+-- skin puts a compact list (no inventory) on the left half and leaves the
+-- right half to the game's options. The debug window keeps the full loadout.
 --
 -- Left: the profiles, None first. At the main menu a click selects: that is
 -- the profile every game started, loaded or joined from here is played with
@@ -29,8 +30,82 @@
 -- wider than tall, so widths are multiplied by utils_xml.screen_ratio() to
 -- keep icons their shape.
 
-local XML_FILE = "ui_persistent_stalkers.xml"
-local ROWS = 12 -- profile rows shown at once; the arrows page through more
+local XML_FILE = "ui_persistent_stalkers.xml" -- the main menu's layout; also the new/remove boxes
+local FULL_XML = "ui_persistent_stalkers_full.xml" -- the debug window: the loadout
+local ROWS = 12 -- profile rows in the debug window; the main menu's skin sets its own
+
+-- The look of the main menu and its panel (AGENTS.md, "Skins"). These are
+-- the default skin's values; persistent_stalkers_skin.get() (the default
+-- skin returns nothing; romeo\gamedata replaces that file) overrides them
+-- for the main and pause menus. The debug switch window, over the game,
+-- always takes these.
+--   own_background  the main menu draws ui_persistent_stalkers.xml's
+--                   background (false: ui_mm_main.xml's, which other menu
+--                   mods patch)
+--   move_options    the game's option list moves to the right edge (false:
+--                   left where the menu mod puts it)
+--   layout          the panel's layout file (nodes under "menu")
+--   frame           draw menu:background, a frame (it needs a frame
+--                   texture: _back, _l, _lt, … parts; false: no node needed)
+--   rows            profile rows shown at once
+--   loadout         the equipment column (false: the layout has no inventory)
+--   backpack, note, what  draw the backpack grid, the note under the list,
+--                   the line about what playing with the row means
+--   compact         short details: name, money, rank, faction and class
+--   head            colour code of the name line
+-- The debug window copies this. The main and pause menus take skin(), which
+-- lays the default skin's get() over it (the left-half list, no inventory).
+local DEFAULT_SKIN = {
+	name = "default",
+	own_background = true,
+	move_options = true,
+	layout = FULL_XML,
+	frame = true,
+	rows = ROWS,
+	loadout = true,
+	backpack = true,
+	note = true,
+	what = true,
+	compact = false,
+	head = "%c[255,235,200,75]",
+	lobby = true, -- the main menu's "Start the lobby" button (node menu:btn_lobby)
+}
+
+-- The lobby window's panel (persistent_stalkers_lobby): compact, on the
+-- left while a profile is being changed, hidden on the lineup. The backpack
+-- fills the space under the equipment column. Not a skin's choice.
+local LOBBY_SKIN = {
+	name = "lobby",
+	layout = "ui_persistent_stalkers_lobby.xml",
+	frame = true,
+	rows = 8,
+	backpack = true,
+	bag_below = true,
+	note = false,
+	what = false,
+	compact = true,
+	head = "%c[255,235,200,75]",
+	lobby = false,
+}
+
+-- The skin for the main and pause menus: the default, with what
+-- persistent_stalkers_skin.get() returns over it. A plain global (not
+-- rawget): it loads that script on first use, also at a cold main menu.
+function skin()
+	local t = {}
+	for k, v in pairs(DEFAULT_SKIN) do
+		t[k] = v
+	end
+	local ok, over = pcall(function() return persistent_stalkers_skin.get() end)
+	if ok and type(over) == "table" then
+		for k, v in pairs(over) do
+			t[k] = v
+		end
+	elseif not ok then
+		printf("[PersistentStalkers] ! no skin (%s): the default", tostring(over))
+	end
+	return t
+end
 local ICON_PX = 50 -- pixels a grid cell in the icon textures
 local BAG_CELLS = { 30, 26, 22, 18, 15, 12, 10 } -- backpack cell heights tried, largest that fits
 -- The equipment column as G.A.M.M.A.'s inventory has it (G.A.M.M.A. UI's
@@ -171,18 +246,28 @@ end
 --   how: "menu"   the main menu: every row, a click selects for the next game
 --        "pause"  the pause menu in a game: the profile in use, read only
 --        "switch" the debug window in a game: every row, "Switch to"
+--        "lobby"  the lobby window (persistent_stalkers_lobby): as "menu",
+--                 and the lobby is told of each selection (the model's look)
 class "ProfilePanel"
 
 function ProfilePanel:__init(mm, how)
 	self.mm = mm
 	self.how = how or (level.present() and "pause" or "menu")
-	self.in_game = self.how ~= "menu"
+	-- in the lobby, as at the main menu, no profile is in use yet
+	self.in_game = not (self.how == "menu" or self.how == "lobby")
 	self.first = 1 -- the first profile row shown
 	self.rows = {}
 	self.cells = {} -- { wnd, sec } of the shown loadout, for the hover card
 	self.R = unit_ratio()
+	if self.how == "switch" or self.how == "lobby" then
+		self.skin = {}
+		for k, v in pairs(self.how == "lobby" and LOBBY_SKIN or DEFAULT_SKIN) do self.skin[k] = v end
+	else
+		self.skin = skin()
+	end
+	self.nrows = tonumber(self.skin.rows) or ROWS
 	self.xml = CScriptXmlInit()
-	self.xml:ParseFile(XML_FILE)
+	self.xml:ParseFile(self.skin.layout or XML_FILE)
 	self.wnd = self.xml:InitStatic("menu:panel", mm)
 	local p = profile()
 	if not self.in_game then
@@ -203,18 +288,25 @@ end
 
 function ProfilePanel:Build()
 	local xml, wnd = self.xml, self.wnd
-	xml:InitFrame("menu:background", wnd)
+	-- A frame needs a frame texture (_back, _l, _lt, … parts): a plain one
+	-- crashed the game on its first draw (ROMEO skin, 2026-11-13). A skin
+	-- without a frame has no background node at all.
+	if self.skin.frame then
+		xml:InitFrame("menu:background", wnd)
+	end
 	self.title = xml:InitTextWnd("menu:title", wnd)
 	self.list_title = xml:InitTextWnd("menu:list_title", wnd)
 	-- Rows are check buttons with their text on top, as MCM's own list
 	-- (elements:btn_list): the selected one is kept checked, so it stays
 	-- pressed (SetCheck in Refresh).
-	local row = xml:InitStatic("menu:row", wnd)
+	-- the template row only gives the position and size; a check button, as
+	-- the rows are (a static has no texture by the button's name)
+	local row = xml:InitCheck("menu:row", wnd)
 	local pos = row:GetWndPos()
 	local rw, rh = row:GetWidth(), row:GetHeight()
 	row:Show(false)
 	self.row_texts = {}
-	for i = 1, ROWS do
+	for i = 1, self.nrows do
 		local name = "pst_row_" .. i
 		local y = pos.y + (i - 1) * (rh + 3)
 		local b = xml:InitCheck("menu:row", wnd)
@@ -237,34 +329,61 @@ function ProfilePanel:Build()
 		self.btn_close = self:Button("menu:btn_close", "pst_btn_close", function(s) s.mm:Close() end)
 		self.btn_close:TextControl():SetText("Close")
 	end
-	self.note = xml:InitTextWnd("menu:note", wnd)
+	if self.how == "menu" and self.skin.lobby then
+		self.btn_lobby = self:Button("menu:btn_lobby", "pst_btn_lobby", self.OnLobby)
+		self.btn_lobby:TextControl():SetText("Start the lobby")
+	end
+	-- the skin leaves some parts out; their nodes need not be in its layout
+	if self.skin.note then
+		self.note = xml:InitTextWnd("menu:note", wnd)
+	end
 
-	self.details = xml:InitTextWnd("menu:details", wnd)
-	self.equip = xml:InitStatic("menu:equip", wnd)
-	self:BuildColumn()
-	self.bag = xml:InitStatic("menu:bag", wnd)
-	self.bag_caption = xml:InitTextWnd("menu:bag_caption", wnd)
-	-- the backpack goes right of the column (whose width depends on the
-	-- screen), up to its own right edge in the layout
-	local bpos = self.bag:GetWndPos()
-	local right = bpos.x + self.bag:GetWidth()
-	local bx = self.equip:GetWndPos().x + self.equip:GetWidth() + 10
-	at(self.bag, bx, bpos.y, math.max(40, right - bx), self.bag:GetHeight())
-	at(self.bag_caption, bx, self.bag_caption:GetWndPos().y, math.max(40, right - bx), self.bag_caption:GetHeight())
-	self.what = xml:InitTextWnd("menu:what", wnd)
+	if self.skin.details ~= false then
+		self.details = xml:InitTextWnd("menu:details", wnd)
+	end
+	if self.skin.loadout ~= false then
+		self.equip = xml:InitStatic("menu:equip", wnd)
+		self:BuildColumn()
+	end
+	if self.skin.backpack then
+		self.bag = xml:InitStatic("menu:bag", wnd)
+		self.bag_caption = xml:InitTextWnd("menu:bag_caption", wnd)
+		self.bag_caption:SetText("Backpack")
+		if self.skin.bag_below then
+			-- the lobby's close-up: the whole inventory under the loadout,
+			-- across the panel, in the space below the column
+			local ep = self.equip:GetWndPos()
+			local top = ep.y + self.equip:GetHeight() + 8
+			local pw = math.max(40, self.wnd:GetWidth() - 24)
+			at(self.bag_caption, 12, top, pw, 18)
+			local by = top + 20
+			at(self.bag, 12, by, pw, math.max(40, self.wnd:GetHeight() - by - 12))
+		elseif not self.skin.bag_stay then
+			-- the backpack goes right of the column (whose width depends on the
+			-- screen), up to its own right edge in the layout
+			local bpos = self.bag:GetWndPos()
+			local right = bpos.x + self.bag:GetWidth()
+			local bx = self.equip:GetWndPos().x + self.equip:GetWidth() + 10
+			at(self.bag, bx, bpos.y, math.max(40, right - bx), self.bag:GetHeight())
+			at(self.bag_caption, bx, self.bag_caption:GetWndPos().y, math.max(40, right - bx), self.bag_caption:GetHeight())
+		end
+	end
+	if self.skin.what then
+		self.what = xml:InitTextWnd("menu:what", wnd)
+	end
 
 	local titles = {
 		menu = { "Choose your character", "Profiles" },
 		pause = { "Your character in this game", "Profile in use" },
 		switch = { "Switch profiles (debug mode)", "Profiles" },
+		lobby = { "Choose your character", "Profiles" },
 	}
 	self.title:SetText(titles[self.how][1])
 	self.list_title:SetText(titles[self.how][2])
-	self.btn_new:TextControl():SetText("New profile")
-	self.btn_remove:TextControl():SetText("Remove profile")
+	self.btn_new:TextControl():SetText(self.skin.compact and "New" or "New profile")
+	self.btn_remove:TextControl():SetText(self.skin.compact and "Remove" or "Remove profile")
 	self.btn_up:TextControl():SetText("Up")
 	self.btn_down:TextControl():SetText("Down")
-	self.bag_caption:SetText("Backpack")
 
 	local ok, info = pcall(function() return utils_ui.UIInfoItem(self.mm, 400) end)
 	self.info = ok and info or nil
@@ -341,10 +460,11 @@ end
 function ProfilePanel:Refresh()
 	local entries = self:Entries()
 	self.entries = entries
-	if #entries <= ROWS then
+	local n = self.nrows
+	if #entries <= n then
 		self.first = 1
 	else
-		self.first = math.max(1, math.min(self.first, #entries - ROWS + 1))
+		self.first = math.max(1, math.min(self.first, #entries - n + 1))
 	end
 	for i, b in ipairs(self.rows) do
 		local name = entries[self.first + i - 1]
@@ -358,14 +478,14 @@ function ProfilePanel:Refresh()
 			t:SetTextColor(color(on and CLR_ROW_ON or CLR_ROW))
 		end
 	end
-	self.btn_up:Show(#entries > ROWS)
-	self.btn_down:Show(#entries > ROWS)
+	self.btn_up:Show(#entries > n)
+	self.btn_down:Show(#entries > n)
 	self.btn_remove:Show(self:Removable(self.chosen))
 	self:ShowChosen()
 end
 
 function ProfilePanel:Page(d)
-	self.first = self.first + d * (ROWS - 1)
+	self.first = self.first + d * math.max(1, self.nrows - 1)
 	self:Refresh()
 end
 
@@ -373,8 +493,8 @@ end
 function ProfilePanel:Reveal(name)
 	for i, n in ipairs(self:Entries()) do
 		if n == name then
-			if i < self.first or i > self.first + ROWS - 1 then
-				self.first = math.max(1, i - ROWS + 1)
+			if i < self.first or i > self.first + self.nrows - 1 then
+				self.first = math.max(1, i - self.nrows + 1)
 			end
 			return
 		end
@@ -382,28 +502,45 @@ function ProfilePanel:Reveal(name)
 end
 
 -- Makes name the selection: the profile the next game is played with. Only
--- at the main menu.
+-- at the main menu. In the lobby's editor a row only wears it (previewing);
+-- Done is what selects.
 function ProfilePanel:Select(name)
 	if self.in_game then
 		return false
 	end
 	local p = profile()
-	if name ~= p.current_profile() then
+	local preview = false
+	if self.how == "lobby" and persistent_stalkers_lobby and persistent_stalkers_lobby.previewing then
+		preview = persistent_stalkers_lobby.previewing()
+	end
+	if not preview and name ~= p.current_profile() then
 		if not p.choose(name) then
 			log("! menu: %s could not be selected", tostring(name))
 			return false
 		end
-		log("profile selected at the main menu: %s", name)
+		log("profile selected (%s): %s", self.how, name)
 	end
 	self.chosen = name
 	self:Reveal(name)
 	self:Refresh()
+	if self.how == "lobby" then
+		-- the model in the lobby takes the profile's look
+		guard("lobby look", function() persistent_stalkers_lobby.selected(name) end)
+	end
 	return true
+end
+
+-- The main menu's "Start the lobby": a new game that stays where it starts.
+function ProfilePanel:OnLobby()
+	if self.how ~= "menu" then
+		return
+	end
+	persistent_stalkers_lobby_boot.enter(self.mm)
 end
 
 function ProfilePanel:OnRow(i)
 	local name = self.entries and self.entries[self.first + i - 1]
-	if name and self.how == "menu" then
+	if name and (self.how == "menu" or self.how == "lobby") then
 		self:Select(name)
 	elseif name and self.how == "switch" then
 		-- only shown: the switch is the button's
@@ -468,16 +605,27 @@ function ProfilePanel:ShowChosen()
 			local ok, cur = pcall(state().read)
 			c = ok and cur or nil
 		end
-		head = string.format("%%c[255,235,200,75]%s%%c[default]", self.in_game and "This save's character" or "No profile")
+		head = string.format("%s%s%%c[default]", self.skin.head, self.in_game and "This save's character" or "No profile")
 	else
 		local i = p.info(name) or {}
 		c = i.character
-		local when = i.written and os.date("%Y-%m-%d %H:%M", i.written) or "never"
-		head = string.format("%%c[255,235,200,75]%s%%c[default]   written %s, revision %s%s", name, when,
-			tostring(i.revision or 0), c and c.nick and (", by " .. tostring(c.nick)) or "")
+		if self.skin.compact then
+			head = string.format("%s%s%%c[default]", self.skin.head, name)
+		else
+			local when = i.written and os.date("%Y-%m-%d %H:%M", i.written) or "never"
+			head = string.format("%s%s%%c[default]   written %s, revision %s%s", self.skin.head, name, when,
+				tostring(i.revision or 0), c and c.nick and (", by " .. tostring(c.nick)) or "")
+		end
 	end
 	local lines = { head }
-	if c then
+	if c and self.skin.compact then
+		-- a narrow column: one fact a line
+		lines[#lines + 1] = string.format("Money: %s RU", tostring(c.money or "?"))
+		lines[#lines + 1] = string.format("Rank: %s", tostring(c.rank or "?"))
+		local cls = class_name(c)
+		lines[#lines + 1] = cls and ("Class: " .. cls)
+			or ("Faction: " .. (c.faction and game.translate_string(c.faction) or "?"))
+	elseif c then
 		local skills = 0
 		local sl = type(c.mod_state) == "table" and c.mod_state.skills_levels
 		if type(sl) == "table" then
@@ -500,16 +648,37 @@ function ProfilePanel:ShowChosen()
 				class_name(c) or "none", perks,
 				tostring(xp.general or 0), cxp and (", " .. tostring(cxp) .. " class") or "")
 		end
+		local ct = type(c.talents) == "table" and c.talents
+		if ct then
+			local spent = 0
+			for _, lvl in pairs(type(ct.talents_t) == "table" and ct.talents_t or {}) do
+				if type(lvl) == "number" then spent = spent + lvl end
+			end
+			local cls = ct.picked_class
+			local title = "none"
+			if type(cls) == "string" and cls ~= "" and cls ~= "null" then
+				local ok, s = pcall(game.translate_string, "pick_class_" .. cls .. "_title")
+				title = ok and type(s) == "string" and s ~= "pick_class_" .. cls .. "_title" and s or cls
+			end
+			lines[#lines + 1] = string.format("Talents class: %s    Talents: %s", title, spent)
+		end
 	elseif name ~= p.NONE then
-		lines[#lines + 1] = "Empty: no character yet."
+		lines[#lines + 1] = self.skin.compact and "Empty: takes the character of the first game played with it."
+			or "Empty: no character yet."
 	end
-	self.details:SetText(table.concat(lines, " \\n"))
+	if self.details then
+		self.details:SetText(table.concat(lines, " \\n"))
+	end
 	guard("loadout", self.ShowLoadout, self, c)
-	self.what:SetText(self:Describe(name, c ~= nil))
-	local constant = core().chosen_mode() == "profile"
-	self.note:SetText((constant and "Constant saves: on (MCM). The character is written whenever it changes."
-		or "The character follows the save: it is written when you save. Constant saves are in MCM.")
-		.. (self.how == "switch" and " \\n \\nDebug mode (-dbg): F8 or Esc closes this." or ""))
+	if self.what then
+		self.what:SetText(self:Describe(name, c ~= nil))
+	end
+	if self.note then
+		local constant = core().chosen_mode() == "profile"
+		self.note:SetText((constant and "Constant saves: on (MCM). The character is written whenever it changes."
+			or "The character follows the save: it is written when you save. Constant saves are in MCM.")
+			.. (self.how == "switch" and " \\n \\nDebug mode (-dbg): F8 or Esc closes this." or ""))
+	end
 	if self.btn_switch then
 		self.btn_switch:Enable(not self:InUse(name))
 		self.btn_switch:TextControl():SetText(name == p.NONE and "Stop using a profile" or ("Switch to " .. name))
@@ -532,7 +701,7 @@ end
 
 function ProfilePanel:ClearLoadout()
 	if self.equip_layer then self.equip:DetachChild(self.equip_layer) end
-	if self.bag_layer then self.bag:DetachChild(self.bag_layer) end
+	if self.bag_layer and self.bag then self.bag:DetachChild(self.bag_layer) end
 	self.equip_layer, self.bag_layer = nil, nil
 	self.cells = {}
 end
@@ -649,12 +818,12 @@ end
 
 function ProfilePanel:ShowLoadout(c)
 	self:ClearLoadout()
+	if not self.equip then
+		return
+	end
 	self.equip_layer = self.xml:InitStatic("menu:layer", self.equip)
-	self.bag_layer = self.xml:InitStatic("menu:layer", self.bag)
 	local EW, EH = self.equip:GetWidth(), self.equip:GetHeight()
-	local BW, BH = self.bag:GetWidth(), self.bag:GetHeight()
 	at(self.equip_layer, 0, 0, EW, EH)
-	at(self.bag_layer, 0, 0, BW, BH)
 	local items = c and type(c.items) == "table" and c.items or {}
 
 	-- equipment: G.A.M.M.A.'s cells over its background
@@ -720,7 +889,14 @@ function ProfilePanel:ShowLoadout(c)
 		rest[#rest + 1] = belt[i]
 	end
 
-	-- backpack: the largest cell that fits everything
+	-- backpack: the largest cell that fits everything (none in a skin
+	-- without it: only what is equipped is drawn)
+	if not self.bag then
+		return
+	end
+	self.bag_layer = self.xml:InitStatic("menu:layer", self.bag)
+	local BW, BH = self.bag:GetWidth(), self.bag:GetHeight()
+	at(self.bag_layer, 0, 0, BW, BH)
 	local list = stacks(rest)
 	local cell, cols
 	for _, ch in ipairs(BAG_CELLS) do
@@ -807,6 +983,10 @@ end
 
 -- Each frame, from the main menu's Update: the item card under the cursor.
 function ProfilePanel:Update()
+	-- xrRazom's gear screen skipped when joining a lobby (persistent_stalkers_lobby)
+	if self.how == "menu" then
+		pcall(function() persistent_stalkers_lobby_join.guard_faction_ui() end)
+	end
 	if not self.info then
 		return
 	end
@@ -1113,6 +1293,12 @@ end
 -- could not be built (the menu then works without it).
 function attach(mm)
 	local how = level.present() and "pause" or "menu"
+	if how == "menu" then
+		local ok, err = pcall(function() persistent_stalkers_lobby_boot.main_menu_check() end)
+		if not ok then
+			log("! the lobby's main menu check failed: %s", tostring(err))
+		end
+	end
 	local ok, panel = pcall(function() return ProfilePanel(mm, how) end)
 	if not ok then
 		log("! the profile panel could not be built: %s", tostring(panel))

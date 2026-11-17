@@ -24,9 +24,10 @@ NONE = "none" -- "None": no profile at all, regular saves (never a file)
 local FILE_VERSION = 1
 local SNAPSHOTS_KEPT = 40 -- save keys kept per profile, newest first
 local SHRINK_BACKUPS = 3 -- .bak1 .. .bakN, see write_character
--- Character fields read only when their mod is enabled (Skill tree): a
--- write without one keeps the stored one (write_character).
-local KEEP_WHEN_ABSENT = { "skill_tree" }
+-- Character fields read only when their mod is enabled (Skill tree,
+-- Classes and Talents): a write without one keeps the stored one
+-- (write_character).
+local KEEP_WHEN_ABSENT = { "skill_tree", "talents" }
 
 local profile_in_use -- nil: the selected one (selected_profile)
 local data -- the active profile's file, as a table
@@ -243,6 +244,33 @@ function revision()
 	return load().revision
 end
 
+-- The world (the host's session id) the profile was last written in, or
+-- nil for a file written before this was kept. "Character follows the
+-- save" follows a save only of that world: a save of another world gets the
+-- profile, so progress made in one world is not rolled back by another's.
+function world()
+	local w = load().world
+	return type(w) == "string" and w ~= "" and w or nil
+end
+
+-- Edits made outside a game (the lobby's faction change): { faction,
+-- goodwill }, or nil. The next arrival puts them on whichever character it
+-- takes, the save's own included, whatever the carry checkboxes say, then
+-- clears them.
+function pending()
+	local e = load().pending
+	return type(e) == "table" and next(e) ~= nil and e or nil
+end
+
+function clear_pending()
+	local d = load()
+	if d.pending == nil then
+		return true
+	end
+	d.pending = nil
+	return write_table(path(), d)
+end
+
 local function item_count(c)
 	return type(c) == "table" and type(c.items) == "table" and #c.items or 0
 end
@@ -267,13 +295,8 @@ function character_of(name)
 	return i and i.character
 end
 
--- Copies the active profile's file to .bak1 (older ones move to .bak2,
--- .bak3). Returns true when there was a file to keep.
-function keep_backup()
-	if current_profile() == NONE then
-		return false
-	end
-	local p = path()
+-- Copies a profile file to .bak1 (older ones move to .bak2, .bak3).
+local function backup_path(p)
 	local cur = read_file(p)
 	if not (cur and cur ~= "") then
 		return false
@@ -287,11 +310,21 @@ function keep_backup()
 	return write_file(p .. ".bak1", cur) and true or false
 end
 
+-- Copies the active profile's file to .bak1 (older ones move to .bak2,
+-- .bak3). Returns true when there was a file to keep.
+function keep_backup()
+	if current_profile() == NONE then
+		return false
+	end
+	return backup_path(path())
+end
+
 -- Writes the character when it differs from the stored one. Returns true
 -- when the file was written. A write that loses more than half of the items
 -- (of at least 6) first keeps the old file as .bak1 (older ones move to
--- .bak2, .bak3): a wrong read can then be undone by hand.
-function write_character(c, why)
+-- .bak2, .bak3): a wrong read can then be undone by hand. world: the world
+-- it is played in (see world()), kept with it.
+function write_character(c, why, world)
 	local d = load()
 	local old = d.character
 	-- Parts read only when their mod is enabled: played without it, the
@@ -301,7 +334,7 @@ function write_character(c, why)
 			c[k] = old[k]
 		end
 	end
-	if old and encode(old) == encode(c) then
+	if old and encode(old) == encode(c) and (world == nil or d.world == world) then
 		return false
 	end
 	local before, after = item_count(old), item_count(c)
@@ -309,6 +342,9 @@ function write_character(c, why)
 		log("%s: %s items -> %s; the old file is kept as %s.bak1", current_profile(), before, after, path())
 	end
 	d.character = c
+	if world then
+		d.world = world
+	end
 	d.revision = d.revision + 1
 	d.written = os.time()
 	d.version = FILE_VERSION
@@ -316,6 +352,101 @@ function write_character(c, why)
 		return false
 	end
 	log("%s written (revision %s, %s items%s)", current_profile(), d.revision, after, why and (", " .. why) or "")
+	return true
+end
+
+-- The factions a profile's goodwill is kept for. The same list the character
+-- is read with when the relations script is not loaded.
+function faction_ids()
+	return { "army", "bandit", "csky", "dolg", "ecolog", "freedom", "greh", "isg", "killer", "monolith", "renegade", "stalker" }
+end
+
+-- A faction's name as the game shows it (dolg is Duty). The id itself when
+-- there is no translation.
+function faction_label(id)
+	if type(id) ~= "string" or id == "" then
+		return "?"
+	end
+	local function tr(key)
+		local ok, s = pcall(game.translate_string, key)
+		if ok and type(s) == "string" and s ~= "" and s ~= key then
+			return s
+		end
+	end
+	return tr(id) or tr("actor_" .. id) or id
+end
+
+local function known_faction(id)
+	if type(id) ~= "string" then
+		return false
+	end
+	for _, f in ipairs(faction_ids()) do
+		if f == id then
+			return true
+		end
+	end
+	return false
+end
+
+-- Sets one profile's faction. reset: every faction's goodwill toward this
+-- character becomes 0, which is what a new game starts from (the world's
+-- faction relations then decide). Otherwise the stored goodwill is left as
+-- it is. The file is backed up first. Returns true, or false and a reason.
+-- An empty profile and None are refused. Keeping goodwill while already that
+-- faction does nothing.
+function set_faction(name, faction, reset)
+	if name == NONE or not has_profile(name) then
+		return false, "no such profile"
+	end
+	if not known_faction(faction) then
+		return false, "no such faction"
+	end
+	local file = profile_path(name)
+	local t = name == current_profile() and load() or read_table(file)
+	if type(t) ~= "table" or type(t.character) ~= "table" then
+		return false, "this profile has no character yet"
+	end
+	local c = t.character
+	local old = type(c.faction) == "string" and c.faction or ""
+	if not reset and old == faction then
+		return false, "already this faction"
+	end
+	backup_path(file)
+	c.faction = faction
+	if reset then
+		local g = {}
+		for _, f in ipairs(faction_ids()) do
+			g[f] = 0
+		end
+		if type(c.goodwill) == "table" then
+			for f in pairs(c.goodwill) do
+				if g[f] == nil and type(f) == "string" then
+					g[f] = 0
+				end
+			end
+		end
+		c.goodwill = g
+	end
+	t.character = c
+	-- Also kept apart: the next arrival may follow a save that still has the
+	-- old faction, and puts these on top (persistent_stalkers, pending()).
+	local e = type(t.pending) == "table" and t.pending or {}
+	e.faction = faction
+	if reset then
+		e.goodwill = c.goodwill
+	end
+	t.pending = e
+	t.revision = (tonumber(t.revision) or 0) + 1
+	t.written = os.time()
+	t.version = FILE_VERSION
+	if name == current_profile() then
+		data = t
+	end
+	if not write_table(file, t) then
+		return false, "the profile could not be written"
+	end
+	log("%s faction %s -> %s, goodwill %s (revision %s)", name, old ~= "" and old or "none", faction,
+		reset and "reset to 0" or "kept", t.revision)
 	return true
 end
 

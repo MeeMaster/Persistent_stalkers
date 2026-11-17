@@ -66,6 +66,7 @@ local DEFAULTS = {
 	carry_needs = true,
 	carry_mod_state = true,
 	carry_skill_tree = true,
+	carry_talents = true,
 	carry_recipes = true,
 	death_strip = false,
 }
@@ -137,6 +138,7 @@ local function parts()
 		needs = setting("carry_needs") == true,
 		mod_state = setting("carry_mod_state") == true,
 		skill_tree = setting("carry_skill_tree") == true,
+		talents = setting("carry_talents") == true,
 		recipes = setting("carry_recipes") == true,
 	}
 end
@@ -159,7 +161,7 @@ local function is_host()
 end
 
 function in_session()
-	return session() ~= nil
+	return session() == true
 end
 
 local function settling()
@@ -188,13 +190,36 @@ local function death_handled()
 end
 
 -------------------------------------------------------------------------------
+-- The world: the host's session id, made at a world's first save (or its
+-- arrival) and kept in every save of it. A profile keeps the world it was
+-- last written in (persistent_stalkers_profile.world).
+
+local function new_session()
+	return string.format("%x%04x", os.time(), math.random(0, 65535))
+end
+
+-- A save key's world: the key is <session>-<counter>.
+local function world_of(key)
+	return type(key) == "string" and key:match("^(.+)%-%d+$") or nil
+end
+
+-- The world played now. A client in a world the host has not saved yet has
+-- no session to know: "unsaved", which no save's world matches.
+local function world_id()
+	if is_host() then
+		return session_info.session
+	end
+	return world_of(host_key) or "unsaved"
+end
+
+-------------------------------------------------------------------------------
 -- Writing
 
 -- Reads the actor and writes the profile if it changed. Only once the
 -- character is live: before that the actor holds the save's or xrRazom's
 -- version, and while dead or during DANTE's death return it is half moved.
 function write(why)
-	if not (in_game() and phase == "live") or mode() == "off" then
+	if not (in_game() and phase == "live") or mode() == "off" or lobby_game() then
 		return false
 	end
 	if not db.actor:alive() or dante_busy() or state().busy() then
@@ -207,7 +232,7 @@ function write(why)
 	end
 	local okn, nick = pcall(function() return XrrNet():GetNickName() end)
 	c.nick = okn and type(nick) == "string" and nick ~= "" and nick or nil
-	return profile().write_character(c, why)
+	return profile().write_character(c, why, world_id())
 end
 
 local function mark_dirty()
@@ -282,7 +307,25 @@ local function go_none(why)
 	log("no profile: %s", why)
 end
 
+-- The profile's pending edits (the lobby's faction change) on top of the
+-- character the arrival took, then cleared: the next write keeps them.
+local function apply_pending()
+	local e = profile().pending()
+	if not e then
+		return
+	end
+	local ok, err = pcall(state().apply_edits, e)
+	if not ok then
+		log("! the profile's edits: %s", tostring(err))
+		return
+	end
+	log("the profile's edits made outside a game put on: faction %s%s", tostring(e.faction or "kept"),
+		e.goodwill and ", goodwill reset" or "")
+	profile().clear_pending()
+end
+
 local function after_apply(report, what)
+	apply_pending()
 	go_live("applied")
 	local bad = report.missing + report.refused + report.misplaced
 	tip(string.format("%s%s", what or ("character " .. profile().current_profile() .. " restored"),
@@ -305,13 +348,24 @@ local function target()
 	if mode() == "profile" then
 		return stored, stored and "the profile" or "a new profile takes the character as it is"
 	end
+	-- A save is followed only within the world the profile was last played
+	-- in: a reload rolls the character back, another world does not (a
+	-- profile written before the world was kept follows the save as before).
+	local pw = p.world()
 	if is_host() then
 		if loaded and loaded.profile == p.current_profile() then
+			if stored and pw and pw ~= loaded.session then
+				return stored, string.format("the save was played with this profile, but in another world (%s, the profile was last in %s): the profile",
+					tostring(loaded.session), pw)
+			end
 			return nil, "the save was last played with this profile: the character follows it"
 		end
 		return stored, stored and "this save has no copy of this profile: the profile" or "a new profile takes the character as it is"
 	end
 	local snap = host_key and host_key ~= "" and p.snapshot(host_key)
+	if snap and stored and pw and pw ~= world_of(host_key) then
+		return stored, string.format("the copy kept for save %s is from another world than the profile's last (%s): the profile", host_key, pw)
+	end
 	if snap then
 		return snap, "the copy kept for save " .. host_key
 	end
@@ -326,6 +380,7 @@ local function apply_target()
 		apply_character(c, why)
 	else
 		log("%s", why)
+		apply_pending()
 		go_live(why)
 		tip("playing as " .. profile().current_profile())
 	end
@@ -343,6 +398,10 @@ end
 -- The profile was chosen at the main menu, before this game: no question
 -- here. None plays the save's character; a profile gets target().
 local function decide()
+	if lobby_game() then
+		lobby_started()
+		return
+	end
 	local p = profile()
 	if arrival.level_change then
 		arrival = nil
@@ -356,6 +415,11 @@ local function decide()
 		return
 	end
 	arrival = nil
+	if is_host() and not session_info.session then
+		-- a new game, or a save from before the mod: a world of its own from
+		-- now on, so the profile written here knows it
+		session_info.session = new_session()
+	end
 	local sel = p.current_profile()
 	log("playing as %s (this world was last played with %s)", sel, tostring(world_tag() or "nothing"))
 	if sel == p.NONE then
@@ -396,7 +460,37 @@ local function start_arrival(level_change)
 	arrival = { t = time_global(), level_change = level_change }
 end
 
+-- fake_start is where every new game boots before its ChangeLevel to the
+-- start, where a joining client waits for the host's level, and where the
+-- lobby is (persistent_stalkers_lobby): no character of anyone's is there,
+-- so nothing starts (phase idle: nothing read, applied or written; a save
+-- made there names no profile).
+local NOT_A_WORLD = "fake_start"
+
+-- The lobby (persistent_stalkers_lobby) is on a real level too (Cordon,
+-- since 2026-11-16): its game is no world either.
+function lobby_game()
+	local ok, v = pcall(function() return persistent_stalkers_lobby.lobby_game() end)
+	return ok and v == true
+end
+
+-- The lobby started (on a client it starts on the host's word, while the
+-- arrival may be waiting): nothing here from now on.
+function lobby_started()
+	if phase ~= "idle" then
+		log("the lobby started: nothing is read, applied or written here (was %s)", phase)
+	end
+	phase = "idle"
+	arrival = nil
+end
+
 local function on_first_update()
+	if level.name() == NOT_A_WORLD or lobby_game() then
+		phase = "idle"
+		arrival = nil
+		log("on %s: not a world (%s), nothing starts here", level.name(), lobby_game() and "the lobby" or "fake_start")
+		return
+	end
 	profile().pin()
 	local lc = take_marker()
 	if not is_host() then
@@ -485,10 +579,6 @@ end
 -- Saves (host): every save gets a key, sent to everyone, and what it was
 -- played with.
 
-local function new_session()
-	return string.format("%x%04x", os.time(), math.random(0, 65535))
-end
-
 local function save_state(m_data)
 	if not is_host() then
 		return -- a client's save_state is xrRazom's surrogate, not a save
@@ -558,7 +648,7 @@ local function ev_saved(args)
 	if mode() == "save" then
 		local ok, c = pcall(state().read)
 		if ok then
-			profile().write_character(c, "host saved " .. t.key)
+			profile().write_character(c, "host saved " .. t.key, world_of(t.key))
 			profile().store_snapshot(t.key, c)
 		end
 	elseif mode() == "profile" then
@@ -658,9 +748,9 @@ end
 function status()
 	local p = profile()
 	local lines = {
-		string.format("mode %s, profile %s (revision %s), phase %s, %s, save key %s, played with %s, snapshots %s", mode(),
-			p.current_profile(), tostring(p.revision()), phase, is_host() and "host" or "client", tostring(host_key),
-			tostring(world_tag()), tostring(p.snapshot_count())),
+		string.format("mode %s, profile %s (revision %s, last in world %s%s), phase %s, %s, save key %s, world %s, played with %s, snapshots %s", mode(),
+			p.current_profile(), tostring(p.revision()), tostring(p.world()), p.pending() and ", edits pending" or "", phase,
+			is_host() and "host" or "client", tostring(host_key), tostring(world_id()), tostring(world_tag()), tostring(p.snapshot_count())),
 		"file " .. p.path(),
 		"stored: " .. state().summary(p.character()),
 	}

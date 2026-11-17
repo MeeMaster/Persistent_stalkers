@@ -2,9 +2,9 @@
 
 Your character, kept on your own computer and taken into every game you play or join, like a character in an MMO. You choose it at the main menu, before starting, loading or joining a game. For S.T.A.L.K.E.R. Anomaly / G.A.M.M.A., solo and xrRazom co-op.
 
-This is the `menu_load` branch: the main menu version of Persistent Stalkers, still being tried out. The first version, on `master`, asks which character to play after a save has loaded, and lets you switch with a key during play. This one moves the choice to the main menu. Use one or the other, not both (this one installs as `PS_v2` in Mod Organizer, the first as `Persistent_stalkers`): they share their profile files, so your characters carry over.
+This is the `menu_load` branch: the main menu version of Persistent Stalkers, still being tried out. The first version, on `master`, asks which character to play after a save has loaded, and lets you switch with a key during play. This one moves the choice to the main menu. Both install as `Persistent_stalkers` in Mod Organizer, so use one or the other. They share their profile files, so your characters carry over.
 
-The profile holds what you carry and where (weapon slots, outfit, helmet, backpack, artefact belt, the active weapon), with each item's condition, upgrades, ammo, uses and part wear, plus your money, rank, reputation, each faction's goodwill toward you, hunger, thirst, sleepiness, skill levels, your Skill tree class, perks and XP (when Skill tree is installed) and learned crafting recipes. Quest items stay with the world they came from. Health, bleeding, every body part, radiation and psy health stay with the save: when a save loads, that state is remembered and put back onto you after the profile's gear is applied.
+The profile holds what you carry and where (weapon slots, outfit, helmet, backpack, artefact belt, the active weapon), with each item's condition, upgrades, ammo, uses and part wear, plus your money, rank, reputation, each faction's goodwill toward you, hunger, thirst, sleepiness, skill levels, your Skill tree class, perks and XP (when Skill tree is installed), your Classes and Talents class, talents and tree levels (when that mod is installed) and learned crafting recipes. Quest items stay with the world they came from. Health, bleeding, every body part, radiation and psy health stay with the save: when a save loads, that state is remembered and put back onto you after the profile's gear is applied.
 
 **Requires Master Core** (shared code for DANTE, Private Backrooms, and Persistent Stalkers). Install and enable it too; its place in the load order does not matter. Without it the mod turns itself off. This mod replaces the main menu script, so it must be above MCM (Mod Configuration Menu) in Mod Organizer's priority; `tools\install.ps1` puts it there.
 
@@ -21,7 +21,24 @@ To play another character, quit to the main menu and select it. The pause menu d
 
 Each profile is one character, stored in `D:\Anomaly\appdata\persistent_stalkers_profile_<name>.txt`. It is not tied to your nickname.
 
+**CLIKRAD ROMEO modpack:** ROMEO has its own main menu, with a video across the top and its buttons on the left. Install the `romeo` folder of this mod as an extra mod above Persistent Stalkers (or run `tools\install.ps1 -Romeo`). It keeps ROMEO's menu as it is and puts a smaller profile panel in the lower right: the list of profiles and what the selected one wears, without the backpack.
+
 **Remove profile** (at the main menu, under New profile) removes the selected profile after a warning. `default` cannot be removed. A backup file is kept in the same folder (`…removed-<time>.txt`). To play a removed character again, create a new profile, select it, and load a save you played with the old one: a new profile takes the character of the first game played with it, so it becomes the character as that save holds it. Anything the old profile gained after that save is only in the backup file.
+
+## The lobby (experimental)
+
+The lobby is a small scene where you pick your character before a game, and where friends join you before a co-op game. Press **Start the lobby** under the profile list at the main menu. A short game loads at the selected lobby place (Cordon's rookie village unless you choose another): your character stands by the campfire, wearing the selected profile's outfit and weapon, with the camera in front. Other players stand in a row beside you, each with a name plate showing their nickname, profile, faction and class.
+
+Along the bottom are the main menu's own options: **New game**, **Load game**, **Last save**, **Options**, **MCM**, **Leave the lobby** and **Quit**. Whatever you start or load from here is played with the profile you selected, as from the main menu. **Last save** loads the save that was newest when you entered the lobby.
+
+- **Change profile** brings the camera close and opens the list. Click a profile to try it on, then press **Done** to select it, or Esc to go back to the one you had.
+- **Changing faction.** While Change profile is open, the column on the right shows each faction's relation to the profile's faction and its goodwill toward the character. Pick a faction, then **Keep** (change the faction and keep every goodwill) or **Reset** (change the faction and set every goodwill to 0, as a new character starts). Both ask first. The change is applied the next time you load or start a game with that profile. A backup of the profile file is kept (`.bak1`).
+- **New game** opens the usual new game screen. With a profile that already has a character, the faction is the profile's and only its start locations are offered. The starting kit is skipped, because the profile's gear is put on when the game loads. With **None**, or a new empty profile, the screen works as usual.
+- **Co-op.** The host enters the lobby. Other players connect from their own main menu (**Connect**), with their profile already selected. Each player can change profile in the lobby. When the host starts a new game or loads a save, everyone goes along, and each player arrives as their own profile. This includes a save they were never in: the gear screen is skipped and their profile's gear is put on instead.
+
+Nothing you do in the lobby touches your saves. The lobby is never saved, and the faction change is the only thing it writes to a profile. To keep the load short, most mods' scripts are not started in the lobby. Their MCM pages still work, and they run as usual in the game you load from it.
+
+The lobby uses its own world file, `gamedata\spawns\ps_lobby.spawn`, which is made for G.A.M.M.A.'s world. If your game's world is different (another modpack, or a G.A.M.M.A. update that changes the maps), the lobby notices, writes a line to the log, and loads the game's full world instead. That world starts in an empty test level instead of the rookie village. It loads more slowly, and xrRazom does not host there, so co-op lobbies need the lobby world file.
 
 ## Constant saves
 

@@ -1,0 +1,124 @@
+; Persistent Stalkers: the lobby's place and cameras. Shipped with the mod.
+;
+; [actor_free_cam] is the engine's free-look zoom (read when the actor is made).
+; G.A.M.M.A. starts at 0.4, 10 (5.2 m). 0.4, 6.6 starts at 3.5 m and caps zoom-out
+; there. A change needs a game restart. The '!' marks the section as an override:
+; actor_free_cam already exists, and an unmarked copy stops the game.
+;
+; [persistent_stalkers_lobby] is the lobby script's settings:
+;   place      the [ps_lobby_place_<name>] the lobby uses. On another map than
+;              the spawn starts on, the lobby changes level to it first (no
+;              rebuild of the spawn). On a map with no place, the host stands
+;              where the actor starts and the camera is free look.
+;   spacing    m between slots, for a place with no spacing of its own. The
+;              host's slot is the first; the other four follow it to the host's
+;              left (the camera's right).
+;   side       1; -1 puts the other slots to the host's right instead
+;   face       radians added to the bodies' heading (host_rotation)
+;   glide      s the camera takes between the lineup and the close-up
+;   cam_mode   the free-look camera on a map with no place (2)
+;
+; [ps_lobby_place_<name>]: one starting position (persistent_stalkers_place.script)
+;   map            the level
+;   host_position  x, y, z on that map: where the host stands
+;   host_rotation  degrees, the way the host faces: 0 north (+z), 90 east (+x).
+;                  The slots and every camera turn with it.
+;   camera         the lineup camera from the host's slot: right, up, forward (m),
+;                  yaw, pitch (degrees; yaw 0 looks the way the host looks, 180
+;                  back at the host; pitch up positive)
+;   spacing        optional: m between slots at this place (else the one above)
+;   close          the Change profile close-up, from each player's own slot, the
+;                  same way; close_<n> (close_2 ...) gives slot n its own
+;
+; In the lobby, with -dbg:
+;   run_string persistent_stalkers_lobby.snapshot()          the camera on screen as camera
+;   run_string persistent_stalkers_lobby.snapshot("close")   ... as close, from your slot
+;   run_string persistent_stalkers_lobby.snapshot("close", 3)  ... as close_3
+;   run_string persistent_stalkers_lobby.tune("spacing", 1.3)  try a spacing
+;   run_string persistent_stalkers_lobby_tune.where()        hand tuning (F7 in the window)
+; Anywhere in a game:
+;   run_string persistent_stalkers_place.here()          your map, position and yaw
+;   run_string persistent_stalkers_place.add("name")     a place with you as the host,
+;                                                        facing where the camera goes
+;   run_string persistent_stalkers_place.choose("name")  select a place
+
+![actor_free_cam]
+lim_zoom = 0.4, 6.6
+
+[persistent_stalkers_lobby]
+place = radar
+spacing = 1.2
+side = 1
+face = 0
+glide = 0.3
+cam_mode = 2
+
+; Cordon, the rookie village: the row 4 m south of the central campfire, its
+; back to the fire, facing south. The cameras are the ones recorded on fake_start.
+[ps_lobby_place_rookie_village]
+map = l01_escape
+host_position = -209.75, -20, -138.25
+host_rotation = 180
+camera = -2.9, 1.5, 5, 180, 0
+close = 0.4, 1, 1.5, 180, 0
+
+[ps_lobby_place_bar]
+map = l05_bar
+host_position = 131.5, -4.8, 23.1
+host_rotation = 0
+camera = -2.9, 1.5, 5, 180, 0
+close = 0.4, 1, 1.5, 180, 0
+
+[ps_lobby_place_duty]
+map = l05_bar
+host_position = 225.5, -5.45, 125.3
+host_rotation = 0
+camera = -2.9, 1.5, 5, 180, 0
+close = 0.4, 1, 1.5, 180, 0
+
+[ps_lobby_place_construction]
+map = l06_rostok
+host_position = -233.0, 9.4, 57.4
+host_rotation = 213
+camera = -2.9, 1.5, 5, 180, 0
+close = 0.4, 1, 1.5, 180, 0
+
+[ps_lobby_place_yantar]
+map = l08_yantar
+host_position = 86.24, 0.069, -41.92
+host_rotation = 92
+camera = -2.9, 1.5, 5, 180, 0
+close = 0.4, 1, 1.5, 180, 0
+spacing = 1.2
+
+[ps_lobby_place_dead_city]
+map = l09_deadcity
+host_position = -42, 2.2, -15.4
+host_rotation = 0
+camera = -2.9, 0.3, 5, 180, 21
+close = 0.4, 1, 1.5, 180, 0
+spacing = 1.4
+
+[ps_lobby_place_chernobyl]
+map = l12_stancia
+host_position = 158.77, 15.188, -173.719
+host_rotation = 188
+camera = -2.9, 0.7, 5, 180, 16
+close = 0.4, 1, 1.5, 180, 0
+spacing = 1.2
+
+[ps_lobby_place_generators]
+map = l13_generators
+host_position = 99.948, 27.222, -297.994
+host_rotation = 131
+camera = -2.9, 1.5, 5, 180, 1
+close = 0.4, 1, 1.5, 180, 0
+spacing = 1.2
+
+[ps_lobby_place_radar]
+map = l10_radar
+host_position = 68.822, -4.796, -25.782
+host_rotation = 110
+camera = -2.9, 0.7, 5, 180, 16
+close = 0.4, 1, 1.5, 180, 0
+spacing = 1.2

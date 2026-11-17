@@ -1,0 +1,608 @@
+-- Persistent Stalkers: the lobby's window (AGENTS.md, "The lobby": "The window").
+--
+-- The lineup leaves the models clear: a plaque over each player, and the
+-- options along the bottom. Change profile is the editor: the camera goes to
+-- this machine's close-up, the profile panel opens on the left and the
+-- goodwill column on the right. A row wears the profile; Done selects it and
+-- returns to the lineup; Esc wears the profile that was selected when the
+-- editor opened, and returns.
+--
+-- The options are the main menu's own: each button calls the method of
+-- ui_main_menu.main_menu that the main menu's button of that name calls, with
+-- this window as its self, so Load game opens the same load dialog, Options
+-- the same options, New game the same faction select, Quit the same box (and
+-- xrRazom's patches of those methods, looked up at the click, are in it too).
+-- Those dialogs come back to their owner as they do to the main menu
+-- (owner:ShowDialog(true), owner:Show(true)); the methods use only what this
+-- window has as well: message_box, mbox_mode, SetMsg, StartGame, LoadLastSave
+-- (ours: the save that was newest at the main menu). Not the engine's own
+-- button list (InitMMShniaga): in a game it is the pause menu's page.
+--
+-- The scene (camera, models, nameplates) is persistent_stalkers_lobby.
+
+local XML_FILE = "ui_persistent_stalkers_lobby.xml"
+local SLOTS = 5
+local ROW_Y = 728 -- the bottom row; a second row sits just above it when the captions need the width
+local ROW_H = 28
+local PLATE_W, PLATE_H = 220, 100
+local PLATE_HEAD = 1.9 -- m above the spot: the plaque sits over the head
+
+-- { the main menu's button, its method, its caption (a string id), who sees it }
+local OPTIONS = {
+	{ "btn_newgame", "OnButton_new_game", "ui_mm_newgame", "host" },
+	{ "btn_load", "OnButton_load_clicked", "ui_mm_load_game", "host" },
+	{ "btn_lastsave", "OnButton_last_save", "ui_mm_last_save", "all" },
+	{ "btn_options", "OnButton_options_clicked", "ui_mm_options_n", "all" },
+	{ "btn_mcm", "OnButton_mcm_clicked", "ui_mm_menu_mcm", "mcm" },
+	{ "btn_quit_to_mm", "OnButton_disconnect_clicked", "Leave the lobby", "all" },
+	{ "btn_quit", "OnButton_quit_clicked", "ui_mm_quit2windows", "all" },
+}
+
+-- The message box's events, to the main menu's methods of the same use.
+local BOX_EVENTS = {
+	{ "MESSAGE_BOX_OK_CLICKED", "OnMsgOk" },
+	{ "MESSAGE_BOX_CANCEL_CLICKED", "OnMsgCancel" },
+	{ "MESSAGE_BOX_YES_CLICKED", "OnMsgYes" },
+	{ "MESSAGE_BOX_NO_CLICKED", "OnMsgNo" },
+	{ "MESSAGE_BOX_QUIT_GAME_CLICKED", "OnMessageQuitGame" },
+	{ "MESSAGE_BOX_QUIT_WIN_CLICKED", "OnMessageQuitWin" },
+}
+
+-- The dialogs the main menu's methods open, kept on self under these names.
+local CHILDREN = { "new_game_dlg", "peer_faction_dlg", "load_dlg", "save_dlg", "opt_dlg", "mcm_dlg" }
+
+local RELATION_COLOR = { good = "50,175,50", neutral = "175,175,50", bad = "175,50,50", none = "140,140,140" }
+
+local function log(fmt, ...)
+	local ok, text = pcall(string.format, fmt, ...)
+	printf("%s", "[PersistentStalkers] lobby: " .. (ok and text or fmt))
+end
+
+local function core()
+	return persistent_stalkers_lobby
+end
+
+local function profile()
+	return persistent_stalkers_profile
+end
+
+local function try(what, fn, ...)
+	local ok, err = pcall(fn, ...)
+	if not ok then
+		log("! %s failed: %s", what, tostring(err))
+	end
+	return ok, err
+end
+
+-- Keys as the engine gives them (a DIK_keys number) or the checks do (a name).
+function key_pressed(action)
+	return action == "WINDOW_KEY_PRESSED" or (ui_events ~= nil and action == ui_events.WINDOW_KEY_PRESSED)
+end
+
+function is_key(dik, name)
+	return dik == name or (DIK_keys ~= nil and DIK_keys[name] ~= nil and dik == DIK_keys[name])
+end
+
+-- Calls the main menu's method `name` with w as its self.
+local function pass(w, name, ...)
+	local cls = ui_main_menu and ui_main_menu.main_menu
+	local fn = cls and cls[name]
+	if type(fn) ~= "function" then
+		log("! the main menu has no %s", name)
+		return
+	end
+	log("%s (the main menu's)", name)
+	return fn(w, ...)
+end
+
+-- game.world2ui returns an Fvector2 (userdata in game, a table in the checks).
+local function to_ui(pos)
+	for _, fn in ipairs({ game.world2ui, level.world2ui }) do
+		if type(fn) == "function" then
+			local ok, ui = pcall(fn, pos, false, true)
+			local okx, x = pcall(function() return ui.x end)
+			local oky, y = pcall(function() return ui.y end)
+			if ok and okx and oky and type(x) == "number" and type(y) == "number" then
+				return x, y
+			end
+		end
+	end
+	return nil
+end
+
+-- How a relation reads, the same bands as the PDA and the new game screen
+-- (game_relations: 1000 and above friendly, -1000 and below hostile).
+function relation_kind(n)
+	if type(n) ~= "number" then
+		return "none"
+	end
+	local hi, lo = 1000, -1000
+	local gr = rawget(_G, "game_relations")
+	if type(gr) == "table" then
+		if type(gr.FRIENDS) == "number" then hi = gr.FRIENDS end
+		if type(gr.ENEMIES) == "number" then lo = gr.ENEMIES end
+	end
+	if n >= hi then return "good" end
+	if n <= lo then return "bad" end
+	return "neutral"
+end
+
+function relation_text(n, kind)
+	local body = "—"
+	if type(n) == "number" then
+		local v = math.floor(n + 0.5)
+		body = v > 0 and ("+" .. tostring(v)) or tostring(v)
+	end
+	return "%c[255," .. (RELATION_COLOR[kind] or RELATION_COLOR.none) .. "]" .. body
+end
+
+-- This faction's relation toward another, as the player of that faction has it
+-- (actor_<faction>, else the faction itself). Nil when the registry has none.
+function faction_standing(from_id, to_id)
+	if type(from_id) ~= "string" or type(to_id) ~= "string" then
+		return nil
+	end
+	local reg = rawget(_G, "relation_registry")
+	if type(reg) ~= "table" or type(reg.community_relation) ~= "function" then
+		return nil
+	end
+	local function one(a)
+		local ok, v = pcall(reg.community_relation, a, to_id)
+		if ok and type(v) == "number" then
+			return v
+		end
+	end
+	return one("actor_" .. from_id) or one(from_id)
+end
+
+function faction_patch(id, lit)
+	return "ui_mm_faction_" .. id .. (lit and "" or "_inactive")
+end
+
+-- A 3t button of window w from node, registered as name, with its click and caption.
+local function button(w, xml, node, name, click, caption, parent)
+	local b = xml:Init3tButton(node, parent or w)
+	w:Register(b, name)
+	w:AddCallback(name, ui_events.BUTTON_CLICKED, click, w)
+	if caption then
+		b:TextControl():SetText(caption)
+	end
+	return b
+end
+
+-------------------------------------------------------------------------------
+-- The window
+
+class "UILobby" (CUIScriptWnd)
+
+function UILobby:__init() super()
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	self:SetAutoDelete(true)
+	self.mbox_mode = 0
+	self.panel = persistent_stalkers_menu.ProfilePanel(self, "lobby")
+	local xml = CScriptXmlInit()
+	xml:ParseFile(XML_FILE)
+	self.hint = xml:InitTextWnd("lobby:hint", self)
+
+	self.message_box = CUIMessageBoxEx()
+	self:Register(self.message_box, "msg_box")
+	for _, e in ipairs(BOX_EVENTS) do
+		local method = e[2]
+		self:AddCallback("msg_box", ui_events[e[1]], function()
+			try(method, pass, self, method)
+		end, self)
+	end
+
+	self.options = {}
+	for _, o in ipairs(OPTIONS) do
+		local name, method, caption = o[1], o[2], o[3]
+		local b = button(self, xml, "lobby:option", name, function()
+			if method == "OnButton_mcm_clicked" then
+				try("mcm_gather_all", persistent_stalkers_lobby_boot.mcm_gather_all)
+			end
+			try(method, pass, self, method)
+		end, game.translate_string(caption))
+		self.options[#self.options + 1] = { button = b, who = o[4], name = name }
+	end
+	self.btn_change = button(self, xml, "lobby:btn_change", "btn_change", function() try("change", self.BeginEdit, self) end, "Change profile")
+	self.btn_done = button(self, xml, "lobby:btn_done", "btn_done", function() try("done", self.EndEdit, self, true) end, "Done")
+	self.btn_done:Show(false)
+	self.plates = {}
+	for i = 1, SLOTS do
+		local w = xml:InitTextWnd("lobby:plate", self)
+		w:Show(false)
+		self.plates[i] = w
+	end
+	self:BuildGoodwill(xml)
+	self:Refresh()
+end
+
+function UILobby:__finalize()
+end
+
+local function place_wnd(w, x, y, width, height)
+	w:SetWndPos(vector2():set(x, y))
+	w:SetWndSize(vector2():set(width, height))
+end
+
+-- The goodwill column on the right of the close-up, and the reset box under it.
+function UILobby:BuildGoodwill(xml)
+	self.gw = xml:InitFrame("goodwill:background", self)
+	place_wnd(self.gw, 812, 12, 200, 432)
+	self.gw_title = xml:InitTextWnd("goodwill:title", self.gw)
+	self.gw_title:SetText("Goodwill")
+	self.gw_name = xml:InitTextWnd("goodwill:name", self.gw)
+	place_wnd(self.gw_name, 8, 408, 184, 18)
+	self.gw_name:SetText("")
+	xml:InitTextWnd("goodwill:head_fac", self.gw):SetText("Fac")
+	xml:InitTextWnd("goodwill:head_you", self.gw):SetText("You")
+	self.gw_rows = {}
+	for i, id in ipairs(profile().faction_ids()) do
+		local fid = id
+		local b = button(self, xml, "goodwill:row", "gw_" .. fid, function()
+			self.gw_target = fid
+			self:FillGoodwill()
+		end, nil, self.gw)
+		place_wnd(b, 38, 46 + (i - 1) * 30, 124, 28)
+		local patch = xml:InitStatic("goodwill:patch", b)
+		place_wnd(patch, 2, 1, 26, 26)
+		local rel = xml:InitTextWnd("goodwill:num", b)
+		place_wnd(rel, 30, 4, 46, 20)
+		local you = xml:InitTextWnd("goodwill:num", b)
+		place_wnd(you, 76, 4, 46, 20)
+		self.gw_rows[i] = { id = fid, button = b, patch = patch, rel = rel, you = you }
+	end
+	self.gw_act = xml:InitFrame("faction_box:background", self)
+	place_wnd(self.gw_act, 812, 452, 200, 92)
+	self.gw_act_title = xml:InitTextWnd("faction_box:title", self.gw_act)
+	self.gw_act_title:SetText("Reset faction")
+	self.gw_act_sub = xml:InitTextWnd("faction_box:sub", self.gw_act)
+	self.gw_act_sub:SetText("Goodwill")
+	self.btn_gw_keep = button(self, xml, "faction_box:btn_keep", "gw_keep", function() self:AskFaction(false) end, "Keep", self.gw_act)
+	place_wnd(self.btn_gw_keep, 8, 52, 88, 28)
+	self.btn_gw_reset = button(self, xml, "faction_box:btn_reset", "gw_reset", function() self:AskFaction(true) end, "Reset", self.gw_act)
+	place_wnd(self.btn_gw_reset, 104, 52, 88, 28)
+	self.gw_act:Show(false)
+	self.gw:Show(false)
+end
+
+-- The profile the editor shows (the row tried on), its goodwill and relations.
+function UILobby:FillGoodwill()
+	if not self.gw then
+		return
+	end
+	local p = profile()
+	local name = self.panel and self.panel.chosen or p.current_profile()
+	if self.gw_for ~= name then
+		self.gw_target = nil
+		self.gw_for = name
+	end
+	local info = name and name ~= p.NONE and p.info(name) or nil
+	local c = info and info.character
+	local cur = c and type(c.faction) == "string" and c.faction or nil
+	local g = c and type(c.goodwill) == "table" and c.goodwill or nil
+	if not c then
+		self.gw_faction = name == p.NONE and "None" or "Empty"
+	else
+		self.gw_faction = p.faction_label(cur or "?")
+	end
+	self.gw_name:SetText(self.gw_faction)
+	for _, row in ipairs(self.gw_rows) do
+		local lit = cur == row.id or self.gw_target == row.id
+		row.patch_tex = faction_patch(row.id, lit)
+		row.hint = p.faction_label(row.id)
+		pcall(function() row.patch:InitTexture(row.patch_tex) end)
+		row.rel_n = cur and faction_standing(cur, row.id) or nil
+		row.you_n = g and tonumber(g[row.id]) or nil
+		row.rel_kind, row.you_kind = relation_kind(row.rel_n), relation_kind(row.you_n)
+		row.rel:SetText(relation_text(row.rel_n, row.rel_kind))
+		row.you:SetText(relation_text(row.you_n, row.you_kind))
+		pcall(function() row.button:SetCheck(self.gw_target == row.id) end)
+		pcall(function() row.button:Enable(c ~= nil) end)
+		pcall(function() row.button:TextControl():SetText("") end)
+	end
+	local can = c ~= nil and self.gw_target ~= nil
+	pcall(function() self.btn_gw_reset:Enable(can and true or false) end)
+	pcall(function() self.btn_gw_keep:Enable(can and self.gw_target ~= cur) end)
+end
+
+-- The faction's name under the column: the row under the cursor, else the profile's.
+function UILobby:HoverFaction()
+	if not (self.gw and self.gw:IsShown()) then
+		return
+	end
+	local name = self.gw_faction or ""
+	for _, row in ipairs(self.gw_rows or {}) do
+		local over = false
+		pcall(function() over = row.patch:IsCursorOverWindow() or row.button:IsCursorOverWindow() end)
+		if over then
+			name = row.hint or ""
+			break
+		end
+	end
+	self.gw_name:SetText(name)
+end
+
+function UILobby:AskFaction(reset)
+	local p = profile()
+	local name = self.panel and self.panel.chosen
+	if not name or name == p.NONE or not self.gw_target then
+		return
+	end
+	local info = p.info(name)
+	if not (info and info.character) then
+		return
+	end
+	if not reset and info.character.faction == self.gw_target then
+		return
+	end
+	if self:WarnOpen() then
+		return
+	end
+	self.faction_warn = UIFactionWarn(self, name, self.gw_target, reset)
+	self.faction_warn:ShowDialog(true)
+end
+
+function UILobby:WarnOpen()
+	return self.faction_warn ~= nil and self.faction_warn:IsShown()
+end
+
+-- The options along the bottom, wrapping to a second row so the captions fit.
+-- Change profile leads them; Done takes its place while the editor is open.
+function UILobby:Refresh()
+	local editing = core().is_editing()
+	local host = core().is_host()
+	local has_mcm = ui_mcm ~= nil and ui_mcm.UI_MCM ~= nil
+	local slots = {}
+	self.btn_change:Show(not editing)
+	self.btn_done:Show(editing)
+	slots[#slots + 1] = editing and self.btn_done or self.btn_change
+	for _, o in ipairs(self.options) do
+		local show = o.who == "all" or (o.who == "host" and host) or (o.who == "mcm" and has_mcm)
+		o.button:Show(show)
+		if show then
+			slots[#slots + 1] = o.button
+		end
+	end
+	local cols = #slots > 4 and math.ceil(#slots / 2) or #slots
+	local step = cols > 0 and math.floor(1008 / cols) or 240
+	local bw = math.max(40, step - 8)
+	local rows = cols > 0 and math.ceil(#slots / cols) or 1
+	local y0 = ROW_Y - (rows - 1) * (ROW_H + 6)
+	for i, b in ipairs(slots) do
+		local col = (i - 1) % cols
+		local row = math.floor((i - 1) / cols)
+		place_wnd(b, 8 + col * step, y0 + row * (ROW_H + 6), bw, ROW_H)
+	end
+	if self.panel and self.panel.wnd then
+		self.panel.wnd:Show(editing)
+		if editing then
+			self.panel.wnd:SetWndPos(vector2():set(12, 12))
+		end
+	end
+	place_wnd(self.hint, 12, y0 - 36, 760, 32)
+	if editing then
+		self.hint:SetText("Done keeps this profile. Esc puts the previous one back.")
+	elseif host then
+		self.hint:SetText("Change profile to wear another one, then load a game or start a new one.")
+	else
+		self.hint:SetText("Change profile to wear another one. The host loads the game.")
+	end
+	self.gw:Show(editing)
+	self.gw_act:Show(editing)
+	if editing then
+		self:FillGoodwill()
+	end
+	self:PlacePlates()
+end
+
+function UILobby:BeginEdit()
+	if self:ChildOpen() or not core().edit_begin() then
+		return
+	end
+	self:Refresh()
+end
+
+-- keep: Done (the row tried on is selected); else Esc (the previous one back).
+function UILobby:EndEdit(keep)
+	local chosen = self.panel and self.panel.chosen
+	local was, back = core().edit_end()
+	if not was then
+		return
+	end
+	local name = keep and chosen or back
+	if self.panel and name then
+		self.panel:Select(name)
+	end
+	self:Refresh()
+	pcall(core().hold_camera)
+end
+
+-- The plaques over the players (persistent_stalkers_lobby.plates).
+function UILobby:PlacePlates()
+	if not self.plates then
+		return
+	end
+	local used = {}
+	for _, lab in ipairs(core().plates()) do
+		local w = self.plates[lab.spot]
+		local x, y = to_ui(vector():set(lab.x, lab.y + PLATE_HEAD, lab.z))
+		if w and x then
+			place_wnd(w, x - PLATE_W / 2, math.max(2, y - PLATE_H - 6), PLATE_W, PLATE_H)
+			w:SetText(lab.text)
+			w:Show(true)
+			pcall(function() w:SetTextColor(GetARGB(255, 255, 255, 255)) end)
+			used[lab.spot] = true
+		end
+	end
+	for i, w in ipairs(self.plates) do
+		if not used[i] then
+			w:Show(false)
+		end
+	end
+end
+
+-- What the main menu's methods call on their self.
+
+-- New game (from the faction select): the new game screen's choices carried
+-- into the next game (persistent_stalkers_lobby_boot.carry_new_game), then the
+-- main menu's StartGame (xrRazom's when it is installed) disconnects this
+-- world and starts the new one.
+function UILobby:StartGame()
+	try("new game", persistent_stalkers_lobby_boot.carry_new_game)
+	core().stop()
+	pass(self, "StartGame")
+end
+
+-- After Last save's box (the main menu's OnButton_last_save and OnMsgYes):
+-- the newest save when the lobby was entered (the marker), not the engine's
+-- load_last_save, which knows no save of this session here.
+function UILobby:LoadLastSave()
+	local last = core().get_last_save()
+	if not last then
+		log("! no save was found when the lobby was entered: the engine's last save")
+		pass(self, "LoadLastSave")
+		return
+	end
+	log("loading the last save: %s", last)
+	exec_console_cmd("load " .. last)
+end
+
+-- New game's (xrRazom's: a client gets its peer faction screen).
+function UILobby:ShowFactionUI()
+	pass(self, "ShowFactionUI")
+end
+
+-- Options and MCM report a change that needs a restart.
+function UILobby:SetMsg(text, tmr, align)
+	if text and text ~= "" then
+		self.hint:SetText(text)
+	end
+end
+
+-- One of the main menu's dialogs, or the faction warning, is open in this window's place.
+function UILobby:ChildOpen()
+	for _, k in ipairs(CHILDREN) do
+		local d = self[k]
+		if d and d:IsShown() then
+			return true
+		end
+	end
+	return self:WarnOpen()
+end
+
+function UILobby:Update()
+	CUIScriptWnd.Update(self)
+	if self.panel and core().is_editing() then
+		local ok, err = pcall(self.panel.Update, self.panel)
+		if not ok then
+			log("! the panel failed (%s)", tostring(err))
+			self.panel = nil
+		end
+	end
+	self:PlacePlates()
+	self:HoverFaction()
+end
+
+-- Every key ends here: nothing closes the window or reaches the game (Esc,
+-- the inventory, the PDA, movement). Esc leaves the editor only. The ways
+-- out of the lobby are the options.
+function UILobby:OnKeyboard(dik, keyboard_action)
+	CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	if key_pressed(keyboard_action) then
+		-- hand tuning (F7, debug mode): its keys go nowhere else
+		local ok, used = pcall(persistent_stalkers_lobby_tune.tuning_key, dik)
+		if ok and used then
+			return true
+		end
+	end
+	if core().is_editing() and is_key(dik, "DIK_ESCAPE") and not self:WarnOpen() then
+		self:EndEdit(false)
+	end
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- The warning for a faction change, with or without resetting goodwill.
+-- Enter does nothing.
+
+class "UIFactionWarn" (CUIScriptWnd)
+
+function UIFactionWarn:__init(owner, name, faction, reset) super()
+	self.owner = owner
+	self.name = name
+	self.faction = faction
+	self.reset = reset and true or false
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	local xml = CScriptXmlInit()
+	xml:ParseFile(XML_FILE)
+	xml:InitFrame("faction_warn:background", self)
+	self.title = xml:InitTextWnd("faction_warn:title", self)
+	self.text = xml:InitTextWnd("faction_warn:message", self)
+	self.btn_go = button(self, xml, "faction_warn:btn_go", "btn_go", function() self:OnGo() end,
+		self.reset and "Change and reset goodwill" or "Change and keep goodwill")
+	self.btn_cancel = button(self, xml, "faction_warn:btn_cancel", "btn_cancel", function() self:Close() end, "Cancel")
+	local p = profile()
+	local info = p.info(name)
+	local old = info and info.character and info.character.faction
+	self.title:SetText(self.reset and "Change and reset goodwill?" or "Change and keep goodwill?")
+	self.text:SetText(self:Warning(name, p.faction_label(old or "?"), p.faction_label(faction), old))
+end
+
+function UIFactionWarn:__finalize()
+end
+
+function UIFactionWarn:Warning(name, from, to, old)
+	local who = "Profile " .. name .. ", from " .. from .. " to " .. to .. "."
+	local body
+	if old == self.faction and self.reset then
+		who = "Profile " .. name .. " stays " .. to .. "."
+		body = "Every faction's goodwill toward this character is set to 0. The goodwill you earned is gone. Traders who liked you may refuse you."
+	elseif self.reset then
+		body = "Every faction's goodwill toward this character is set to 0. That is what a new game starts from: each faction treats you as it treats "
+			.. to .. ", and the goodwill you earned is gone. Traders who liked you may refuse you."
+	else
+		body = "Goodwill stays as it is. Factions that like this character stay friendly, and factions that hate them stay hostile. You do not gain "
+			.. to .. "'s friends, and you do not lose the ones already earned. A trader who checks the faction itself may still refuse you."
+	end
+	return who
+		.. " \\n \\n" .. body
+		.. " \\n \\nThe change is stored on the profile and put on the character the next time a game is loaded or started with it, also when that save holds the old faction."
+		.. " \\n \\nThe profile file is backed up first (persistent_stalkers_profile_" .. name .. ".bak1)."
+end
+
+function UIFactionWarn:OnGo()
+	-- The profile file, now, not a game save (those are refused in the lobby).
+	-- The next game reads this file, so the faction carries over.
+	local ok, err = profile().set_faction(self.name, self.faction, self.reset)
+	if not ok then
+		self.text:SetText("%c[255,230,120,90]" .. tostring(err))
+		return
+	end
+	log("profile %s saved: faction %s%s", self.name, self.faction, self.reset and ", goodwill reset" or ", goodwill kept")
+	self:Close()
+	if self.owner and self.owner.FillGoodwill then
+		self.owner:FillGoodwill()
+	end
+	if self.name == profile().current_profile() then
+		core().send_nameplate()
+	end
+end
+
+function UIFactionWarn:Close()
+	if self:IsShown() then
+		self:HideDialog()
+	end
+	if self.owner and self.owner.ShowDialog then
+		self.owner:ShowDialog(true)
+	end
+end
+
+function UIFactionWarn:OnKeyboard(dik, keyboard_action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	if key_pressed(keyboard_action) and is_key(dik, "DIK_ESCAPE") then
+		self:Close()
+		return true
+	end
+	return res
+end
