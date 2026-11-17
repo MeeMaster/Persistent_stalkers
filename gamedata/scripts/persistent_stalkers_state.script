@@ -768,6 +768,9 @@ function apply(c, parts, done)
 	local report = { kept = #keep, released = 0, refused = 0, created = 0, missing = 0, misplaced = 0 }
 	for _, id in ipairs(release) do
 		local se = alife_object(id)
+		-- what other mods keep for it goes with it: a worn Promin's modules
+		-- were ejected into the backpack (Wearable Devices)
+		pcall(master_core_items.drop_id_states, id)
 		local ok, res = pcall(alife_release_id, id)
 		if ok and res ~= false then
 			report.released = report.released + 1
