@@ -231,7 +231,7 @@ function set_spacing(m)
 	changed(pl)
 end
 
--- Writes the place as it is now (and the spacing) into the config.
+-- Writes the place as it is now (its spacing too) into the config.
 function save_place()
 	local pl = live()
 	if not pl then
@@ -242,7 +242,7 @@ function save_place()
 	local keys = {
 		{ sec, "host_position", L({ pl.x, pl.y, pl.z }) },
 		{ sec, "host_rotation", f(pl.rot) },
-		{ core().MAIN, "spacing", f(core().TUNE.spacing) },
+		{ sec, "spacing", f(core().TUNE.spacing) }, -- the place's own
 	}
 	if pl.camera then
 		keys[#keys + 1] = { sec, "camera", L(pl.camera) }
@@ -258,7 +258,7 @@ function save_place()
 		return false
 	end
 	pl.dirty = false
-	log("place %s saved (the game starts the actor at host_position after tools/build_lobby_spawn.sh)", pl.name)
+	log("place %s saved", pl.name)
 	where()
 	return true
 end

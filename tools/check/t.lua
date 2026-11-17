@@ -623,6 +623,10 @@ mm = MM.main_menu()
 check(mm.pst_panel.btn_lobby ~= nil and mm.pst_panel.btn_lobby:TextControl():GetText() == "Start the lobby", "main menu: a Start the lobby button")
 -- with the lobby's own spawn: the main menu's start command reads it, for that call only
 SPAWN_PRESENT = true
+-- a spawn header: chunk id, size, version, the spawn's GUID, the graph's GUID
+local function spawn_head(graph) return string.rep(string.char(0), 12) .. string.rep("S", 16) .. graph .. "rest" end
+FILES["app/ps_lobby.spawn"] = spawn_head(string.rep("G", 16))
+FILES["app/all.spawn"] = spawn_head(string.rep("G", 16))
 mm.StartGame = function() exec_console_cmd("start server(all/single/alife/new) client(localhost)") end
 local n_cmds = #CMDS
 click(mm, "pst_btn_lobby")
@@ -631,7 +635,21 @@ for i = n_cmds + 1, #CMDS do if CMDS[i]:find("^start server") then start_cmd = C
 check(start_cmd == "start server(ps_lobby/single/alife/new) client(localhost)", "enter with ps_lobby.spawn: the new game reads it")
 exec_console_cmd("start server(all/single/alife/new) client(localhost)")
 check(CMDS[#CMDS] == "start server(all/single/alife/new) client(localhost)", "after enter, the start command is no longer redirected")
+-- made for another world graph, or all.spawn unreadable: the lobby starts from all.spawn
+FILES["app/all.spawn"] = spawn_head(string.rep("H", 16))
+local n_log = #LOG
+check(LB.has_spawn() == false and table.concat(LOG, " ", n_log + 1):find("made for another world graph", 1, true),
+	"ps_lobby.spawn made for another world graph: all.spawn, logged")
+FILES["app/all.spawn"] = nil
+check(LB.has_spawn() == false, "all.spawn packed (not a file) and ps_lobby.spawn not for Anomaly's graph: all.spawn")
+local anomaly_graph = ("defae07743cab24b9c71f4729f54e866"):gsub("%x%x", function(b) return string.char(tonumber(b, 16)) end)
+FILES["app/ps_lobby.spawn"] = spawn_head(anomaly_graph)
+check(LB.has_spawn() == true, "all.spawn packed (base Anomaly) and ps_lobby.spawn for Anomaly's graph: ps_lobby.spawn")
+FILES["app/ps_lobby.spawn"] = spawn_head(string.rep("G", 16))
+FILES["app/all.spawn"] = spawn_head(string.rep("G", 16))
+check(LB.has_spawn() == true, "the same world graph: ps_lobby.spawn")
 SPAWN_PRESENT = nil
+check(LB.has_spawn() == false, "no ps_lobby.spawn: all.spawn")
 KEYPRESS = true -- as before the first enter above (it switched it off; that lobby never started)
 local started = false
 mm.StartGame = function() started = true end
@@ -1168,6 +1186,98 @@ FILES[marker] = ""
 start_game()
 LEVEL_NAME = "l01_escape"
 
+do
+print("-- 12c. a place on another map: the lobby changes level first (one spawn for every place)")
+end_game()
+FILES[marker] = master_core_text.encode({ t = os.time(), last = "mysave" })
+FILES[cam_file] = cam_ltx({ name = "bar", map = "l05_bar", pos = "100, 0, 50", rot = "90", camera = "0, 1.5, 4, 180, 0" })
+FILES[cam_file] = FILES[cam_file] .. "spacing = 2.5\r\n" -- the bar's own spacing (the general one is 1.1)
+local VERTS = { { lvl = 1, p = { x = 100, y = 0, z = 50 }, lv = 11 }, { lvl = 5, p = { x = 300, y = 0, z = 50 }, lv = 51 },
+	{ lvl = 5, p = { x = 102, y = 0, z = 49 }, lv = 52 } }
+game_graph = function()
+	return { valid_vertex_id = function(_, i) return VERTS[i + 1] ~= nil end,
+		vertex = function(_, i)
+			local v = VERTS[i + 1]
+			return { level_id = function() return v.lvl end, level_point = function() return v.p end,
+				level_vertex_id = function() return v.lv end }
+		end }
+end
+local LEVEL_IDS = { [1] = "l01_escape", [5] = "l05_bar" }
+local alife_before_travel = alife
+alife = function() return { level_name = function(_, id) return LEVEL_IDS[id] end } end
+local TRAVEL
+ChangeLevel = function(pos, lvid, gvid, dir) TRAVEL = { pos = pos, lvid = lvid, gvid = gvid } end
+VEC_ZERO = vector()
+-- the saves folder: the player's own autosave, and a quicksave
+local SAVEDIR = { ["player - autosave.scop"] = "real", ["player - autosave.scoc"] = "real", ["quick.scop"] = "q" }
+local fs_before_travel = getFS
+getFS = function()
+	local f = fs_before_travel()
+	local list, exist = f.file_list_open_ex, f.exist
+	f.file_list_open_ex = function(self, root, flags, pattern)
+		if root == "$game_saves$" and pattern == "*" then
+			local names = {}
+			for n in pairs(SAVEDIR) do names[#names + 1] = n end
+			table.sort(names)
+			return { Size = function() return #names end, GetAt = function(_, i) return { NameFull = function() return names[i + 1] end } end }
+		end
+		return list(self, root, flags, pattern)
+	end
+	f.exist = function(self, alias, n)
+		if alias == "$game_saves$" then return SAVEDIR[n] ~= nil end
+		return exist(self, alias, n)
+	end
+	f.file_rename = function(_, a, b) a, b = a:gsub("^app/", ""), b:gsub("^app/", ""); SAVEDIR[b] = SAVEDIR[a]; SAVEDIR[a] = nil end
+	f.file_delete = function(_, alias, n) SAVEDIR[n] = nil end
+	return f
+end
+LEVEL_NAME = "l01_escape"
+start_game()
+check(TRAVEL and TRAVEL.gvid == 2 and TRAVEL.lvid == 52 and not LOBBY.is_active() and LOBBY.lobby_game() and C.get_phase() == "idle",
+	"the selected place is on another map: a level change to its map's vertex nearest the host, the lobby not started, the core idle")
+local mk = FILES[marker] ~= "" and master_core_text.decode(FILES[marker])
+check(mk and mk.travelled == "l05_bar" and mk.last == "mysave", "the marker is written again, marked travelled, the last save kept")
+check(SAVEDIR["player - autosave.scop.ps_keep"] == "real" and SAVEDIR["player - autosave.scoc.ps_keep"] == "real" and not SAVEDIR["player - autosave.scop"]
+	and SAVEDIR["quick.scop"] == "q", "before the level change the player's autosave is set aside, other saves untouched")
+-- the engine's level change: it saves the lobby's world as the autosave and loads it
+SAVEDIR["Player - autosave.scop"], SAVEDIR["Player - autosave.scoc"] = "lobby", "lobby"
+-- the arrival: the level goes, the same Lua, the Bar's first update
+fire("actor_on_net_destroy")
+TRAVEL = nil
+LEVEL_NAME = "l05_bar"
+fire("actor_on_first_update")
+check(C.get_phase() == "idle" and LOBBY.lobby_game(), "arrived: still a lobby game, the core idle")
+for i = 1, 10 do NOW = NOW + 100; fire("actor_on_update") end
+check(LOBBY.is_active() and TRAVEL == nil and FILES[marker] == "" and near(ACTOR_POS, 100, 0, 50),
+	"arrived: the lobby starts on the place's host spot, no second level change, the marker used up")
+check(SAVEDIR["player - autosave.scop"] == "real" and SAVEDIR["player - autosave.scoc"] == "real" and not SAVEDIR["Player - autosave.scop"]
+	and not SAVEDIR["player - autosave.scop.ps_keep"] and SAVEDIR["quick.scop"] == "q",
+	"arrived: the lobby's autosave is deleted and the player's is back")
+-- a level change that never arrived (a crash on the way): the main menu puts it back
+SAVEDIR = { ["player - autosave.scop"] = "real" }
+check(persistent_stalkers_lobby_boot.keep_autosaves() and SAVEDIR["player - autosave.scop.ps_keep"] == "real", "set aside again")
+SAVEDIR["Player - autosave.scop"] = "lobby"
+persistent_stalkers_lobby_boot.main_menu_check()
+check(SAVEDIR["player - autosave.scop"] == "real" and not SAVEDIR["Player - autosave.scop"] and not SAVEDIR["player - autosave.scop.ps_keep"],
+	"a level change that never arrived: the main menu deletes the lobby's autosave and puts the player's back")
+check(LOBBY.TUNE.spacing == 2.5, "a place's own spacing is used over the general one")
+LOBBY.stop()
+-- the place on this map: no level change
+end_game()
+FILES[marker] = master_core_text.encode({ t = os.time() })
+start_game()
+check(TRAVEL == nil and LOBBY.is_active(), "the place on the map the spawn starts on: no level change, the lobby starts")
+LOBBY.stop()
+end_game()
+game_graph, ChangeLevel, VEC_ZERO = nil, nil, nil
+getFS = fs_before_travel
+alife = alife_before_travel
+FILES[cam_file] = ""
+FILES[marker] = ""
+end
+start_game()
+LEVEL_NAME = "l01_escape"
+
 print("-- 13. a lobby game isolates every callback")
 -- axr_main's registry, as the game has it (registrants run in order, no pcall)
 local REG = {}
@@ -1219,7 +1329,17 @@ check(axr_main.callback_set == set_now, "wrapped only once")
 local G_MT_OLD = getmetatable(_G)
 local UI_MCM_OLD = rawget(_G, "ui_mcm"); rawset(_G, "ui_mcm", nil)
 local FAKE_MCM = { gather_options = function() return pst_test_skipped, pst_test_kept end, get = function(id) FAKE_MCM_ASKED = (FAKE_MCM_ASKED or 0) + 1; if id == "kept/x" then return 3 end end }
-setmetatable(_G, { __index = function(t, k) if k == "pst_test_kept" or k == "pst_test_skipped" then return { loaded = k } elseif k == "ui_mcm" then return FAKE_MCM end end })
+local seen = {}
+setmetatable(_G, { __index = function(t, k)
+	if k == "pst_test_kept" or k == "pst_test_skipped" then
+		seen[k] = (seen[k] or 0) + 1
+		return { loaded = k, on_mcm_load = function(options)
+			if type(options) == "table" then options[#options + 1] = { id = k } end
+		end }
+	elseif k == "ui_mcm" then
+		return FAKE_MCM
+	end
+end })
 persistent_stalkers_skip = { names = { ["quickdraw.script"] = true, ["pst_test_skipped.script"] = true } }
 local skip_now = ISO.startup_skip()
 check(skip_now and skip_now["quickdraw.script"], "a fresh marker: startup_skip gives the skip list")
@@ -1238,12 +1358,44 @@ local rv_old = axr_main.config.r_value
 local LIVE = { ["stealth/memory"] = 0.75 }
 axr_main.config.r_value = function(_, sec, k, typ, def) if sec == "mcm" and typ == 2 and LIVE[k] ~= nil then return LIVE[k] end return def end
 check(ui_mcm.get("stealth/memory") == 0.75 and ui_mcm.get("a/b") == true, "a skipped mod's setting is read live from axr_options (the snapshot gives its type and the default)")
--- the lobby window's MCM: every page gathered once, nothing blocked
-local FULL_RES
-FAKE_MCM.init_opt_base = function() FAKE_MCM.options = { 1, 2, 3 }; FULL_RES = { FAKE_MCM.gather_options() } end
-check(ISO.mcm_gather_all() == true and FULL_RES[1] and FULL_RES[1].loaded == "pst_test_skipped" and FULL_RES[2] and FULL_RES[2].loaded == "pst_test_kept",
-	"opening MCM from the lobby gathers every page, skipped mods' too")
-check(ISO.mcm_gather_all() == false, "every page is gathered once per lobby game")
+-- the lobby gathers every page in the background, a slice per update, from the
+-- first update. The click finishes whatever is left. Nothing is blocked.
+local fs_old = getFS
+getFS = function()
+	local fs = fs_old()
+	local list = fs.file_list_open_ex
+	fs.file_list_open_ex = function(self, root, flags, pattern)
+		if pattern == "*mcm.script" then
+			local names = { "pst_test_skipped.script", "ui_mcm.script", "pst_test_kept.script" }
+			return {
+				Size = function() return #names end,
+				GetAt = function(_, i)
+					local n = names[i + 1]
+					return { NameShort = function() return n end, Size = function() return 8 end }
+				end,
+			}
+		end
+		return list(self, root, flags, pattern)
+	end
+	return fs
+end
+FAKE_MCM.init_opt_base = function()
+	FAKE_MCM.options = {}
+	FAKE_MCM.gather_options()
+end
+local before_s, before_k = seen.pst_test_skipped or 0, seen.pst_test_kept or 0
+check(ISO.mcm_gather_begin() == true, "the lobby starts gathering every MCM page in the background")
+local asked_mid = FAKE_MCM_ASKED
+check(ISO.mcm_gather_step(0) == true, "one update gathers one script and leaves the rest")
+check((seen.pst_test_skipped or 0) > before_s and (seen.pst_test_kept or 0) == before_k,
+	"the first slice loads a skipped mod's script (nothing blocked) and stops before the next")
+check(ui_mcm.get("stealth/memory") == 0.75 and FAKE_MCM_ASKED == asked_mid,
+	"while a slice is paused, a setting is answered without asking MCM")
+check(ISO.mcm_gather_all() == true and #FAKE_MCM.options == 2
+	and FAKE_MCM.options[1].id == "pst_test_skipped" and FAKE_MCM.options[2].id == "pst_test_kept",
+	"opening MCM finishes the gather: both pages, and ui_mcm.script is not one")
+check(ISO.mcm_gather_all() == false and ISO.mcm_gather_begin() == false, "every page is gathered once per lobby game")
+getFS = fs_old
 local asked1 = FAKE_MCM_ASKED
 ui_mcm.get("stealth/memory")
 check(FAKE_MCM_ASKED == asked1 + 1, "after the full gather, a path MCM did not know before is asked of MCM again")
@@ -1697,6 +1849,130 @@ do
 	end_game()
 	start_game(save_b)
 	check(#EDITS == e, "nothing pending the next time")
+end
+
+print("-- 32. The gate and the in-game skip list")
+do
+	load_script(ROOT_V2, "persistent_stalkers_lobby_known")
+	local LIST = { "__persistent_stalkers_gate.script", "_g_patches.script", "bind_stalker.script", "mp_settings.script",
+		"quickdraw.script", "smr_civil_war.script", "xr_logic.script", "xrr_patch_common.script", "xrr_patch_paw.script", "zzz_dante.script" }
+	FILES["app/xrr_patch_paw.script"] = "-- quickdraw patch\nlocal f = quickdraw.on_key\naxr_main.config = nil\n"
+	FILES["app/xrr_patch_common.script"] = "quickdraw.x = 1\naxr_main.a()\nbind_stalker.b()\nxr_logic.c()\nsim_board.d()\nutils_obj.e()\n"
+	local fs_old = getFS
+	getFS = function()
+		local fs = fs_old()
+		local list = fs.file_list_open_ex
+		fs.file_list_open_ex = function(self, root, flags, pattern)
+			if root == "$game_scripts$" and pattern == "*.script" then
+				return {
+					Size = function() return #LIST end,
+					GetAt = function(_, i)
+						local n = LIST[i + 1]
+						return { NameShort = function() return n end, Size = function() return 8 end }
+					end,
+				}
+			end
+			return list(self, root, flags, pattern)
+		end
+		return fs
+	end
+	local G_MT_OLD = getmetatable(_G)
+	local loaded, started = {}, {}
+	local function mod(name, body)
+		return function()
+			local m = { on_game_start = function() started[#started + 1] = name end }
+			if body then body(m) end
+			return m
+		end
+	end
+	local MODS = {
+		_g_patches = mod("_g_patches"),
+		bind_stalker = mod("bind_stalker", function() local _ = smr_civil_war end), -- names a skipped script at load
+		mp_settings = mod("mp_settings"),
+		quickdraw = mod("quickdraw"),
+		smr_civil_war = mod("smr_civil_war"),
+		xr_logic = mod("xr_logic", function(m) m.on_game_start = function() error("xr_logic broke") end end),
+		xrr_patch_common = mod("xrr_patch_common"),
+		xrr_patch_paw = mod("xrr_patch_paw"),
+		zzz_dante = mod("zzz_dante"),
+	}
+	local function engine_loader(t, k)
+		if k == "__persistent_stalkers_gate" then
+			loaded[k] = true
+			return load_script(ROOT_V2, k)
+		elseif MODS[k] then
+			loaded[k] = true
+			local m = MODS[k]()
+			rawset(t, k, m)
+			return m
+		end
+	end
+	local function reset()
+		for k in pairs(MODS) do rawset(_G, k, nil) end
+		rawset(_G, "__persistent_stalkers_gate", nil)
+		loaded, started = {}, {}
+		setmetatable(_G, { __index = engine_loader })
+	end
+	-- axr_main.on_game_start's loop, as the game's own file has it
+	local axr_loop = assert(load([=[
+		local names = ...
+		local t = {}
+		for _, f in ipairs(names) do
+			local n = f:sub(1, -8)
+			if _G[n] and _G[n].on_game_start then t[#t + 1] = n end
+		end
+		for i = 1, #t do _G[t[i]].on_game_start() end
+	]=], "@axr_main.script", "t", _G))
+
+	-- a lobby game, the game's own axr_main
+	reset()
+	FILES[marker] = master_core_text.encode({ t = os.time() })
+	local GB = load_script(ROOT_V2, "persistent_stalkers_lobby_boot")
+	local names, n, patches = GB.skip_names()
+	check(names["quickdraw.script"] and names["smr_civil_war.script"] and names["xrr_patch_paw.script"]
+		and not names["xrr_patch_common.script"] and not names["bind_stalker.script"] and not names["zzz_dante.script"]
+		and not names["mp_settings.script"] and not names["_g_patches.script"] and not names["__persistent_stalkers_gate.script"]
+		and n == 3 and #patches == 1 and patches[1] == "xrr_patch_paw",
+		"the skip list in game: the mods' scripts and the patch for one; Anomaly's, loose, kept by prefix, and a broad patch stay")
+	local n_log = #LOG
+	local loop_ok = pcall(axr_loop, LIST)
+	local text = table.concat(LOG, "\n", n_log + 1)
+	check(loop_ok and loaded.__persistent_stalkers_gate and started[1] == "_g_patches",
+		"the gate loads first and starts first (before any other on_game_start)")
+	check(not loaded.quickdraw and not loaded.xrr_patch_paw, "axr_main's loop does not load a skipped script")
+	check(loaded.smr_civil_war and not table.concat(started, " "):find("smr_civil_war", 1, true),
+		"a skipped script another one names at load still loads, and is not started")
+	check(table.concat(started, " ") == "_g_patches bind_stalker mp_settings xrr_patch_common zzz_dante",
+		"every kept script is started, the one after a failing on_game_start too")
+	check(text:find("on_game_start of xr_logic failed", 1, true), "a failing on_game_start is logged")
+	check(text:find("gate: 2 skipped scripts not loaded by axr_main, 1 loaded by other scripts and not started", 1, true)
+		and text:find("startup, load", 1, true) and text:find("startup, on_game_start", 1, true),
+		"after the last one, the gate's report and the timing")
+	check(rawget(_G, "bind_stalker").on_game_start ~= nil and not GB.gate_state().open, "the gate is closed after the start")
+	local qd = quickdraw
+	check(type(qd) == "table" and loaded.quickdraw, "after the start a skipped script loads when named (sim_board needs smr_civil_war)")
+
+	-- any other game: everything as the game has it
+	reset()
+	FILES[marker] = ""
+	GB = load_script(ROOT_V2, "persistent_stalkers_lobby_boot")
+	pcall(axr_loop, LIST)
+	check(loaded.quickdraw and table.concat(started, " "):find("quickdraw", 1, true) and table.concat(started, " "):find("smr_civil_war", 1, true)
+		and GB.gate_state() == nil, "no marker: the gate does nothing, every script loads and starts")
+
+	-- a patched axr_main asked first: the gate stands aside
+	reset()
+	FILES[marker] = master_core_text.encode({ t = os.time() })
+	GB = load_script(ROOT_V2, "persistent_stalkers_lobby_boot")
+	local s2 = GB.startup_skip()
+	check(s2 and s2["quickdraw.script"] and GB.gate_begin() == false and GB.gate_state() == nil,
+		"a patched axr_main gets the in-game list, and the gate stands aside")
+	FILES[marker] = ""
+
+	setmetatable(_G, G_MT_OLD)
+	for k in pairs(MODS) do rawset(_G, k, nil) end
+	rawset(_G, "__persistent_stalkers_gate", nil)
+	getFS = fs_old
 end
 
 print(string.format("%d checks, %d failed", checks, fails))

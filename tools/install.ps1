@@ -22,7 +22,7 @@
 
 param(
 	[string]$GammaDir = 'D:\GAMMA',
-	[string]$ProfileName = 'GEM',
+	[string]$ProfileName = 'G.A.M.M.A',
 	[string]$SourceProfile = 'G.A.M.M.A',
 	[string]$ModName = 'Persistent_stalkers',
 	[switch]$Romeo,

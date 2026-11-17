@@ -1,8 +1,9 @@
 -- Persistent Stalkers: the lobby's boot (AGENTS.md, "The lobby").
 --
 -- What runs before the lobby exists: from the main menu (enter, the main menu
--- check) and while a new game's scripts start (our axr_main.script asks
--- startup_skip, through persistent_stalkers_lobby, before any script starts).
+-- check) and while a new game's scripts start (the gate,
+-- __persistent_stalkers_gate.script, the first script axr_main loads; or a
+-- patched axr_main.script, which asks startup_skip before any script loads).
 --   - the marker: Lua starts again with the new game, so enter() leaves a
 --     file that says "this new game is the lobby";
 --   - "press any key" off for the lobby's load and the loads after it;
@@ -323,11 +324,10 @@ end
 -------------------------------------------------------------------------------
 -- The skipped scripts and MCM
 --
--- Our axr_main.script (built by tools/build_axr_main.js) asks startup_skip once,
--- when a game starts and before any script is started: in a lobby game the
--- scripts it must not load or start (persistent_stalkers_skip.names, every
--- script an enabled mod ships that is not Anomaly's own, loose in gamedata or
--- one the lobby needs), else nil: every script, as always.
+-- When a game starts, before any script is started, the gate (or a patched
+-- axr_main) decides once: in a lobby game the scripts not to load or start
+-- (skip_names, below: every script that is not Anomaly's own, loose in the
+-- game's gamedata or one the lobby needs), else nil: every script, as always.
 --
 -- MCM's options are not gathered from skipped mods (in game 2026-11-15:
 -- tasks_fetch asked MCM for one ZCP setting at load, and MCM's first get,
@@ -344,15 +344,27 @@ local skipping = 0
 local blocked = {}      -- skipped script -> { n = times asked, by = { [caller] = true } }
 local blocking = false
 local gathering = false
--- The full MCM in the lobby (user's request, 2026-11-16): when the player opens
--- MCM from the lobby window, MCM's options are gathered again with nothing
--- blocked (ui_mcm.init_opt_base, about 3 s), so every page is there with its
--- real ranges, lists and functions. Once per lobby game.
+-- The full MCM in the lobby (user's request, 2026-11-16): every page, with
+-- nothing blocked (ui_mcm.init_opt_base, about 3 s), so the ranges, lists and
+-- functions are the real ones. Once per lobby game.
+--
+-- It starts on the first update of the lobby and runs a slice per update
+-- (user's request, 2026-11-17: the 3 s used to freeze the game on the click).
+-- A second process or thread cannot do it: the pages are Lua in this state
+-- (functions, engine calls), and the engine's Lua is the one thread. The
+-- click finishes whatever is left.
 local full_gather = false
 local mcm_full = false
 local mcm_unknown = {}  -- paths MCM did not know (wrap_get)
 local mcm_cache = nil
 local mcm_cached = 0    -- lookups answered from the snapshot or axr_options
+local mcm_co = nil      -- the gather, one slice per resume
+local mcm_paused = false -- suspended mid-gather: ui_mcm.get would assert
+local mcm_rush = false  -- the click: finish in this resume
+local mcm_budget = 0.012 -- s of the gather per update
+local mcm_t0 = nil
+local mcm_in_pages = false
+local mcm_failed = false -- a failed gather waits for the click, it does not restart every update
 
 local function caller()
 	if not (debug and debug.getinfo) then
@@ -370,6 +382,79 @@ local function caller()
 	end
 end
 
+-- ui_mcm.gather_options, one script at a time. init_opt_base calls it; while
+-- that call is the coroutine, this runs instead, and yields between scripts.
+-- The file list is copied first: the engine's list is not kept across updates.
+local function gather_pages(m)
+	if mcm_in_pages then
+		return
+	end
+	local options = m.options
+	if type(options) ~= "table" then
+		return
+	end
+	mcm_in_pages = true
+	local ignore = { ["ui_mcm.script"] = true }
+	local names = {}
+	local f = getFS()
+	local flist = f:file_list_open_ex("$game_scripts$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*mcm.script")
+	for it = 0, flist:Size() - 1 do
+		local file = flist:GetAt(it)
+		local file_name = file:NameShort()
+		if file:Size() > 0 and not ignore[file_name] then
+			names[#names + 1] = file_name:sub(1, #file_name - 7)
+		end
+	end
+	local list, slice = {}, os.clock()
+	local function breathe()
+		if mcm_rush or os.clock() - slice < mcm_budget then
+			return
+		end
+		mcm_paused = true
+		coroutine.yield()
+		mcm_paused = false
+		slice = os.clock()
+	end
+	for i = 1, #names do
+		local short = names[i]
+		local ok, mod = pcall(function() return _G[short] end)
+		if ok and type(mod) == "table" and type(mod.on_mcm_load) == "function" then
+			list[#list + 1] = short
+		elseif not ok then
+			log("! MCM: %s failed to load: %s", short, tostring(mod))
+		end
+		if i < #names then
+			breathe()
+		end
+	end
+	for i = 1, #list do
+		local mod = _G[list[i]]
+		local ok, temp, page = pcall(mod.on_mcm_load, options)
+		if not ok then
+			log("! MCM: %s on_mcm_load failed: %s", list[i], tostring(temp))
+		elseif temp and page then
+			local at = nil
+			for j = 1, #options do
+				if options[j].id == page then
+					at = j
+				end
+			end
+			if not at then
+				options[#options + 1] = { id = page, gr = { temp } }
+			else
+				local gr = options[at].gr
+				gr[#gr + 1] = temp
+			end
+		elseif temp then
+			options[#options + 1] = temp
+		end
+		if i < #list then
+			breathe()
+		end
+	end
+	mcm_in_pages = false
+end
+
 local function wrap_gather(m)
 	if type(m) ~= "table" or type(m.gather_options) ~= "function" or m.__pst_gather then
 		return
@@ -377,6 +462,12 @@ local function wrap_gather(m)
 	local orig = m.gather_options
 	m.__pst_gather = true
 	m.gather_options = function(...)
+		-- inside the background gather: our own loop, and skipped scripts load
+		if mcm_co and coroutine.running() == mcm_co then
+			gathering = false
+			gather_pages(m)
+			return
+		end
 		gathering = not full_gather
 		local ok, a, b = pcall(orig, ...)
 		gathering = false
@@ -472,6 +563,11 @@ local function wrap_get(m)
 	local orig = m.get
 	m.__pst_get = true
 	m.get = function(id, ...)
+		-- mid-gather, MCM's own get asserts. The snapshot answers until the
+		-- slice resumes (the same answer as before the gather finishes).
+		if mcm_paused then
+			return type(id) == "string" and mcm_fallback(id) or nil
+		end
 		if type(id) == "string" and mcm_unknown[id] then
 			return mcm_fallback(id)
 		end
@@ -484,29 +580,85 @@ local function wrap_get(m)
 	end
 end
 
--- Before the lobby window opens MCM: gathers every page once.
-function mcm_gather_all()
-	if mcm_full or not blocking then
+local function mcm_stop(ok, err)
+	if ok then
+		local m = rawget(_G, "ui_mcm") or ui_mcm
+		local pages = type(m) == "table" and type(m.options) == "table" and #m.options or 0
+		mcm_full = true
+		mcm_unknown = {}
+		log("MCM: every page gathered for the lobby (%d, %.1f s)", pages, os.clock() - (mcm_t0 or os.clock()))
+	else
+		mcm_failed = true
+		log("! MCM: gathering every page failed: %s", tostring(err))
+	end
+	mcm_co = nil
+	full_gather = false
+	gathering = false
+	mcm_paused = false
+	mcm_rush = false
+	mcm_in_pages = false
+end
+
+-- One slice. True while the gather is still going.
+local function mcm_resume()
+	if not mcm_co or coroutine.status(mcm_co) == "dead" then
+		mcm_co = nil
+		return false
+	end
+	local ok, err = coroutine.resume(mcm_co)
+	if not ok or coroutine.status(mcm_co) == "dead" then
+		mcm_stop(ok, err)
+		return false
+	end
+	return true
+end
+
+-- The first update of a lobby game. The click gathers whatever this has not.
+function mcm_gather_begin()
+	if mcm_full or mcm_co or mcm_failed or not blocking then
 		return false
 	end
 	local m = rawget(_G, "ui_mcm") or ui_mcm
 	if type(m) ~= "table" or type(m.init_opt_base) ~= "function" then
 		return false
 	end
-	local t0 = os.clock()
 	full_gather = true
-	local ok, err = pcall(m.init_opt_base)
-	full_gather = false
-	gathering = false
-	mcm_full = true
-	mcm_unknown = {}
-	local pages = type(m.options) == "table" and #m.options or 0
-	if ok then
-		log("MCM: every page gathered for the lobby (%d, %.1f s)", pages, os.clock() - t0)
-	else
-		log("! MCM: gathering every page failed: %s", tostring(err))
+	mcm_paused = false
+	mcm_rush = false
+	mcm_in_pages = false
+	mcm_t0 = os.clock()
+	mcm_co = coroutine.create(function()
+		m.init_opt_base()
+	end)
+	log("MCM: gathering every page in the background")
+	return true
+end
+
+-- budget: seconds for this slice (the lobby update passes none: mcm_budget).
+-- True while there is more to gather.
+function mcm_gather_step(budget)
+	if mcm_full or not mcm_co then
+		return false
 	end
-	return ok
+	if budget ~= nil then
+		mcm_budget = budget
+	end
+	return mcm_resume()
+end
+
+-- The MCM button. Finishes a gather already running, or starts it and runs it
+-- out now. Once it has finished, the button opens at once.
+function mcm_gather_all()
+	if mcm_full or not blocking then
+		return false
+	end
+	mcm_failed = false -- the click may retry a gather that failed on its own
+	if not mcm_co and not mcm_gather_begin() then
+		return false
+	end
+	mcm_rush = true
+	while mcm_resume() do end
+	return mcm_full == true
 end
 
 local function block_skipped(names)
@@ -642,24 +794,126 @@ function carry_back()
 end
 
 -------------------------------------------------------------------------------
--- axr_main's two questions
+-- The skip list, worked out in game (2026-11-17, user's request: no build on
+-- the player's machine). Every script the engine lists (the enabled mods,
+-- the game's gamedata and its archives) except:
+--   - Anomaly's own and those loose in the game's gamedata (the modded exes,
+--     xrRazom): persistent_stalkers_lobby_known, generated once, in git;
+--   - the scripts the lobby needs, by prefix (KEEP_PREFIX);
+-- and xrRazom's patch scripts for skipped mods: one that names a skipped
+-- script (as `name.`, `name:`, `name[` or a quoted name) and fewer than
+-- PATCH_BASE_MAX of Anomaly's own (the broad ones, common, client, quests, ...,
+-- stay). The rule tools/build_axr_main.js used, without the mod list.
 
-function startup_skip()
+local KEEP_PREFIX = { "_", "persistent_stalkers", "master_core", "xrr_", "ui_mcm", "modxml_", "dxml", "mp_settings", "mcm_log", "dph_mcm" }
+local PATCH_BASE_MAX = 5
+local PATCH_IGNORE = { string = true, table = true, math = true, level = true, db = true, alife = true, game = true, bit = true, io = true, os = true }
+
+local function kept_by_prefix(name)
+	for _, p in ipairs(KEEP_PREFIX) do
+		if name:sub(1, #p) == p then
+			return true
+		end
+	end
+	return false
+end
+
+-- The scripts as axr_main lists them (lower case, ".script"), in its order.
+function listed_scripts()
+	local flist = getFS():file_list_open_ex("$game_scripts$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*.script")
+	local out = {}
+	for i = 0, flist:Size() - 1 do
+		local f = flist:GetAt(i)
+		if f:Size() > 0 then
+			out[#out + 1] = string.lower(f:NameShort())
+		end
+	end
+	return out
+end
+
+local function script_source(file)
+	return master_core_text.read_file(getFS():update_path("$game_scripts$", file))
+end
+
+-- The names a patch script uses as a module.
+local function patch_names(src)
+	src = src:gsub("%-%-[^\n]*", "")
+	local named = {}
+	for w in src:gmatch("([%a_][%w_]*)%s*[%.:%[]") do
+		named[string.lower(w)] = true
+	end
+	for w in src:gmatch("[\"']([%a_][%w_]*)[\"']") do
+		named[string.lower(w)] = true
+	end
+	return named
+end
+
+-- names (file -> true), how many, the patch scripts skipped.
+function skip_names()
+	local known = persistent_stalkers_lobby_known
+	local base, loose = known.base, known.loose
+	local listed = listed_scripts()
+	local names, n = {}, 0
+	for _, f in ipairs(listed) do
+		if not (base[f] or loose[f] or kept_by_prefix(f:sub(1, -8))) and not names[f] then
+			names[f] = true
+			n = n + 1
+		end
+	end
+	local patches = {}
+	for _, f in ipairs(listed) do
+		if f:find("^xrr_patch_") and not names[f] then
+			local ok, src = pcall(script_source, f)
+			if ok and type(src) == "string" then
+				local mods, bases = 0, 0
+				for w in pairs(patch_names(src)) do
+					local file = w .. ".script"
+					if names[file] then
+						mods = mods + 1
+					elseif base[file] and not PATCH_IGNORE[w] then
+						bases = bases + 1
+					end
+				end
+				if mods > 0 and bases < PATCH_BASE_MAX then
+					patches[#patches + 1] = f
+				end
+			end
+		end
+	end
+	-- after the loop: a patch is judged by the mods' scripts, not by other patches
+	for i, f in ipairs(patches) do
+		names[f] = true
+		n = n + 1
+		patches[i] = f:sub(1, -8)
+	end
+	return names, n, patches
+end
+
+-- In a lobby game the skip list, else nil. In every game, first: the new
+-- game screen's choices put back (carry_back).
+local function decide()
 	pcall(carry_back)
 	mark("the scripts start")
 	if not read_marker() then
 		return nil
 	end
-	local ok, names = pcall(function() return persistent_stalkers_skip.names end)
-	if not (ok and type(names) == "table") then
-		log("! a lobby game, but no skip list (tools/build_axr_main.js): every script starts")
-		return nil
+	local ok, names, n, patches = pcall(skip_names)
+	if ok and type(names) == "table" then
+		log("a lobby game: %d mod scripts are not started (%d of them xrRazom patches: %s)", n, #patches, table.concat(patches, " "))
+	else
+		log("! the skip list could not be worked out (%s): the built one, if any", tostring(names))
+		ok, names = pcall(function() return persistent_stalkers_skip.names end)
+		if not (ok and type(names) == "table") then
+			log("! a lobby game, but no skip list: every script starts")
+			return nil
+		end
+		n = 0
+		for _ in pairs(names) do
+			n = n + 1
+		end
+		log("a lobby game: %d mod scripts are not started (the built list)", n)
 	end
-	skipping = 0
-	for _ in pairs(names) do
-		skipping = skipping + 1
-	end
-	log("a lobby game: %d mod scripts are not started", skipping)
+	skipping = n
 	local okb, err = pcall(block_skipped, names)
 	if not okb then
 		log("! the skipped scripts could not be blocked from loading: %s", tostring(err))
@@ -667,7 +921,163 @@ function startup_skip()
 	return names
 end
 
--- Our axr_main.script, in a lobby game, times each script while it starts
+-------------------------------------------------------------------------------
+-- A patched axr_main.script (tools/build_axr_main.js, optional now) asks this
+-- before it lists the scripts, and filters, pcalls and times them itself.
+-- The gate then stands aside.
+
+local asked_by_axr_main = false
+
+function startup_skip()
+	asked_by_axr_main = true
+	return decide()
+end
+
+-------------------------------------------------------------------------------
+-- The gate (2026-11-17, user's request: the game's own axr_main.script, not a
+-- copy). __persistent_stalkers_gate.script sorts first in axr_main's list
+-- (the engine's file list is sorted by name, in lower case), so axr_main
+-- loads it first and starts it first:
+--   - gate_begin, when it loads: in a lobby game, _G's __index answers nil
+--     when axr_main's own loop names a skipped script, so it is neither
+--     loaded nor started. Named by any other script, it loads as always.
+--     Each kept script's load is timed.
+--   - gate_start, its on_game_start, after every script has loaded and before
+--     any other starts: the loop is closed; a skipped script that another one
+--     loaded is not started (its on_game_start a no-op); every other
+--     on_game_start runs in a pcall, timed; after the last one, the report.
+
+local GATE = "__persistent_stalkers_gate"
+local gate = nil -- { names, open, held, load, start, early, reported }
+
+local function call_index(old, t, key)
+	if type(old) == "function" then
+		return old(t, key)
+	elseif type(old) == "table" then
+		return old[key]
+	end
+	return rawget(t, key)
+end
+
+-- True when _G is indexed by axr_main itself (its loop), not by a script it
+-- loads. Level 1 is this, 2 the gate's __index; above that, _g_patches'
+-- __index (it loads after the gate and wraps it) and C frames are passed.
+local function from_axr_main()
+	if not (debug and debug.getinfo) then
+		return false
+	end
+	for level = 3, 10 do
+		local info = debug.getinfo(level, "S")
+		if not info then
+			return false
+		end
+		local src = info.short_src or info.source or ""
+		if src ~= "[C]" and not src:find("_g_patches", 1, true) then
+			return src:find("axr_main", 1, true) ~= nil
+		end
+	end
+	return false
+end
+
+local function clock()
+	local ok, t = pcall(os.clock)
+	return ok and t or 0
+end
+
+function gate_begin()
+	if asked_by_axr_main or gate then
+		return false
+	end
+	local names = decide()
+	if not names then
+		return false
+	end
+	local g = { names = names, open = true, held = 0, load = {}, start = {}, early = {} }
+	-- a skipped script already loaded before the loop reached the gate: by the
+	-- engine's own start (in game 2026-11-17: _g_patches loads
+	-- optimized_time_events, modxml_idiots_ui loads a_idiots_config)
+	for f in pairs(names) do
+		if rawget(_G, f:sub(1, -8)) ~= nil then
+			g.early[#g.early + 1] = f:sub(1, -8)
+		end
+	end
+	local mt = getmetatable(_G) or {}
+	local old = mt.__index
+	mt.__index = function(t, key)
+		if gate == g and g.open and type(key) == "string" and from_axr_main() then
+			if g.names[string.lower(key) .. ".script"] then
+				g.held = g.held + 1
+				return nil
+			end
+			local t0 = clock()
+			local v = call_index(old, t, key)
+			g.load[key] = clock() - t0
+			return v
+		end
+		return call_index(old, t, key)
+	end
+	setmetatable(_G, mt)
+	gate = g
+	if #g.early > 0 then
+		table.sort(g.early)
+		log("gate: %d skipped scripts were already loaded before it (%s): they are not started", #g.early, table.concat(g.early, " ", 1, math.min(10, #g.early)))
+	end
+	return true
+end
+
+function gate_report(stopped)
+	local g = gate
+	if not g or g.reported then
+		return
+	end
+	g.reported = true
+	log("gate: %d skipped scripts not loaded by axr_main, %d loaded by other scripts and not started", g.held, stopped or 0)
+	startup_report(g.load, g.start)
+end
+
+function gate_start()
+	local g = gate
+	if not (g and g.open) then
+		return false
+	end
+	g.open = false
+	local stopped, last = 0, nil
+	for _, f in ipairs(listed_scripts()) do
+		local name = f:sub(1, -8)
+		local m = rawget(_G, name)
+		if name ~= GATE and type(m) == "table" and type(m.on_game_start) == "function" then
+			if g.names[f] then
+				m.on_game_start = function() end
+				stopped = stopped + 1
+			else
+				local fn = m.on_game_start
+				m.on_game_start = function(...)
+					m.on_game_start = fn
+					local t0 = clock()
+					local ok, err = pcall(fn, ...)
+					g.start[name] = clock() - t0
+					if not ok then
+						printf("![PersistentStalkers] lobby: on_game_start of %s failed: %s", name, tostring(err))
+					end
+					if m == last then
+						gate_report(stopped)
+					end
+				end
+				last = m
+			end
+		end
+	end
+	if not last then
+		gate_report(stopped)
+	end
+	return true
+end
+
+function gate_state()
+	return gate
+end
+
+-- In a lobby game each script is timed while it starts (the gate, or a patched axr_main)
 -- (os.clock, seconds): load, its file run when it is first named (with every
 -- script it names in turn), and start, its on_game_start (with the same).
 function startup_report(load, start)
@@ -761,11 +1171,63 @@ end
 -------------------------------------------------------------------------------
 -- From the main menu
 
+-- The world graph's GUID in a spawn's header: chunk 0 (id, size), then the
+-- version, the spawn's GUID and the graph's GUID, bytes 29 to 44. The level
+-- files are checked against it (a wrong graph does not load), and every
+-- G.A.M.M.A. all.spawn seen so far has the same one, mods' included.
+local function spawn_graph(file)
+	local f = io.open(getFS():update_path("$game_spawn$", file), "rb")
+	if not f then
+		return nil
+	end
+	local head = f:read(44)
+	f:close()
+	if type(head) ~= "string" or #head < 44 then
+		return nil
+	end
+	return head:sub(29, 44)
+end
+
+local function hex(s)
+	return s and (s:gsub(".", function(c) return string.format("%02x", c:byte()) end)) or "none"
+end
+
+local function unhex(h)
+	return (h:gsub("%x%x", function(b) return string.char(tonumber(b, 16)) end))
+end
+
+-- Anomaly 1.5.3's own world graph: its all.spawn, packed in
+-- db\configs\spawns.db0 (unpacked 2026-11-17). G.A.M.M.A.'s has the same one.
+local ANOMALY_GRAPH = unhex("defae07743cab24b9c71f4729f54e866")
+
+-- True when ps_lobby.spawn is there and made for this game's world graph
+-- (2026-11-17, user's request: the spawn ships as a static file, built here
+-- from one G.A.M.M.A.'s all.spawn). Otherwise the lobby starts from all.spawn.
 function has_spawn()
 	local ok, found = pcall(function()
 		return getFS():exist("$game_spawn$", SPAWN .. ".spawn")
 	end)
-	return ok and found and true or false
+	if not (ok and found) then
+		return false
+	end
+	local ok1, mine = pcall(spawn_graph, SPAWN .. ".spawn")
+	local ok2, game = pcall(spawn_graph, "all.spawn")
+	mine, game = ok1 and mine or nil, ok2 and game or nil
+	-- all.spawn not readable as a file: no mod has one, so the game's own is
+	-- used, packed in its archives (base Anomaly; in game 2026-11-17 the check
+	-- refused there and the lobby started on fake_start). Its graph is known.
+	if mine and not game and ok2 then
+		game = ANOMALY_GRAPH
+	end
+	if not (mine and game) then
+		log("! %s.spawn: its world graph could not be compared with all.spawn's (%s, %s): all.spawn", SPAWN, mine and "read" or "unread", game and "read" or "unread")
+		return false
+	end
+	if mine ~= game then
+		log("! %s.spawn was made for another world graph (%s) than this game's all.spawn (%s): all.spawn (tools/build_lobby_spawn.sh makes one for this game)", SPAWN, hex(mine), hex(game))
+		return false
+	end
+	return true
 end
 
 -- Starts the lobby's new game: no faction, so nothing leaves the place it
@@ -839,6 +1301,7 @@ end
 -- game: both are cleared. The player markers come back after a crash.
 function main_menu_check()
 	pcall(join().plates_back)
+	pcall(restore_autosaves) -- a level change of the lobby's that never arrived
 	local text = master_core_text.read_file(marker_path())
 	if text and text ~= "" then
 		master_core_text.write_file(marker_path(), "")
@@ -851,6 +1314,97 @@ function main_menu_check()
 		cfg:save()
 		log("a lobby game did not start: its marker and the test-map switch are cleared")
 	end
+end
+
+-------------------------------------------------------------------------------
+-- The level-change autosave. In single player the engine changes level by
+-- saving "<name> - autosave" and loading it back (in game 2026-11-17: the
+-- lobby's trip to a place on another map wrote the lobby's world, 481 spawn
+-- points and respawns off, over the player's own autosave, and Last save
+-- then loaded that empty world). Before the lobby changes level, every
+-- autosave file is renamed aside (<file>.ps_keep) and a note lists them; on
+-- arrival (or at the main menu after a crash on the way) the lobby's autosave
+-- is deleted and the player's are renamed back.
+
+local KEEP_NOTE = "persistent_stalkers_lobby_autosaves.txt"
+local KEEP_EXT = ".ps_keep"
+
+local function autosave_files()
+	local out = {}
+	local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*")
+	if not flist then
+		return out
+	end
+	for i = 0, flist:Size() - 1 do
+		local n = flist:GetAt(i):NameFull()
+		local l = n:lower()
+		if l:find(" - autosave.", 1, true) and not l:find(KEEP_EXT, 1, true) then
+			out[#out + 1] = n
+		end
+	end
+	return out
+end
+
+local function save_path(n)
+	return getFS():update_path("$game_saves$", n)
+end
+
+-- Before the lobby's level change. True when every autosave file is aside
+-- (or there is none); false: nothing is moved, the lobby must not travel.
+function keep_autosaves()
+	local files = autosave_files()
+	if not master_core_text.write_file(app_path(KEEP_NOTE), master_core_text.encode({ t = os.time(), files = files })) then
+		log("! the autosave note could not be written")
+		return false
+	end
+	local fs = getFS()
+	for i, n in ipairs(files) do
+		pcall(function() fs:file_rename(save_path(n), save_path(n .. KEEP_EXT), true) end)
+		if not fs:exist("$game_saves$", n .. KEEP_EXT) then
+			log("! %s could not be set aside: the lobby does not change level", n)
+			for j = 1, i - 1 do
+				pcall(function() fs:file_rename(save_path(files[j] .. KEEP_EXT), save_path(files[j]), true) end)
+			end
+			master_core_text.write_file(app_path(KEEP_NOTE), "")
+			return false
+		end
+	end
+	if #files > 0 then
+		log("the autosave set aside for the level change: %s", table.concat(files, ", "))
+	end
+	return true
+end
+
+-- After the level change (or at the main menu): the lobby's autosave goes,
+-- the player's comes back. Nothing when no note is there.
+function restore_autosaves()
+	local text = master_core_text.read_file(app_path(KEEP_NOTE))
+	if not text or text == "" then
+		return false
+	end
+	local ok, t = pcall(master_core_text.decode, text)
+	local kept = ok and type(t) == "table" and type(t.files) == "table" and t.files or {}
+	local fs = getFS()
+	local dropped, back = {}, {}
+	for _, n in ipairs(autosave_files()) do
+		if pcall(function() fs:file_delete("$game_saves$", n) end) then
+			dropped[#dropped + 1] = n
+		end
+	end
+	for _, n in ipairs(kept) do
+		if fs:exist("$game_saves$", n .. KEEP_EXT) then
+			pcall(function() fs:file_rename(save_path(n .. KEEP_EXT), save_path(n), true) end)
+			if fs:exist("$game_saves$", n) then
+				back[#back + 1] = n
+			else
+				log("! %s%s could not be renamed back: it is in the saves folder under that name", n, KEEP_EXT)
+			end
+		end
+	end
+	master_core_text.write_file(app_path(KEEP_NOTE), "")
+	log("the level change's autosave: the lobby's deleted (%s), yours back (%s)", #dropped > 0 and table.concat(dropped, ", ") or "none",
+		#back > 0 and table.concat(back, ", ") or "none")
+	return true
 end
 
 -- For persistent_stalkers_lobby.status().

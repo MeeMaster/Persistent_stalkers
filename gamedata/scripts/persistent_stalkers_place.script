@@ -164,6 +164,8 @@ function place_of(all, name)
 		local t = numbers(sec[key])
 		return t and #t == 5 and t or nil
 	end
+	local sp = tonumber(sec.spacing)
+	p.spacing = sp and sp > 0 and sp or nil -- this place's own; else [persistent_stalkers_lobby] spacing
 	p.camera = pose("camera")
 	p.close = pose("close")
 	for k in pairs(sec) do

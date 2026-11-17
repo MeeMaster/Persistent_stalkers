@@ -77,6 +77,8 @@ local STAND_INS = {
 }
 
 local active = false
+local travel -- { t, pl, gvid, lvid, pos, m }: the level change about to be sent (travel_target)
+local travelling = false -- sent, or about to be: until the next first update
 local pending -- { t }: the lobby starts after SETTLE
 local asking -- { t0, next }: a client asking the host
 local origin -- { x, y, z, fx, fz, sp, sd, lvid, gvid, place }: the host's slot, the way the bodies face
@@ -158,7 +160,7 @@ end
 -- This game is a lobby, so persistent_stalkers stays idle and writes
 -- nothing: the boot's marker said so, or the lobby is starting or on.
 function lobby_game()
-	return active or pending ~= nil or boot().lobby_load_pending()
+	return active or pending ~= nil or travelling or boot().lobby_load_pending()
 end
 
 -- Our axr_main.script asks these of this script (tools/build_axr_main.js).
@@ -255,6 +257,9 @@ function load_cams()
 		log("no place for %s in the config: the host where the actor stands, free look (persistent_stalkers_place.add(\"name\") makes one)",
 			tostring(here))
 		return nil
+	end
+	if pl.spacing then
+		TUNE.spacing = pl.spacing -- the place's own spacing over the general one
 	end
 	cams = pl
 	log("place %s on %s: host at %.2f, %.2f, %.2f, rotation %s, camera %s, close-up %s", pl.name, pl.map, pl.x, pl.y, pl.z,
@@ -1457,6 +1462,72 @@ local function on_game_loaded()
 	boot().mark("the game is loaded (on_game_load)")
 end
 
+-- One spawn for every place (2026-11-17, user's request). ps_lobby.spawn starts
+-- the actor on one map; when the selected place is on another, the lobby goes
+-- there with a level change before it starts, as a new game goes to its start
+-- map. The marker is written again for the next first update (marked
+-- travelled, so it never travels twice). While on the way this game is still a
+-- lobby game (persistent_stalkers stays idle, nothing is saved).
+-- The game graph vertex on map nearest to the place's host: gvid, lvid, pos.
+local function vertex_near(map, x, y, z)
+	local gg, sim = game_graph(), alife()
+	local best, bd
+	local gvid = 0
+	while gg:valid_vertex_id(gvid) do
+		local v = gg:vertex(gvid)
+		if sim:level_name(v:level_id()) == map then
+			local p = v:level_point()
+			local d = (p.x - x) ^ 2 + (p.y - y) ^ 2 + (p.z - z) ^ 2
+			if not bd or d < bd then
+				best, bd = gvid, d
+			end
+		end
+		gvid = gvid + 1
+	end
+	if not best then
+		return nil
+	end
+	local v = gg:vertex(best)
+	return best, v:level_vertex_id(), v:level_point()
+end
+
+-- The selected place when it is on another map than this one, with where to
+-- arrive there; else nil.
+local function travel_target(m)
+	if m.travelled then
+		return nil
+	end
+	local all = place().read()
+	local pl = all and place().place_of(all, place().selected(all))
+	if not pl or pl.map == level.name() then
+		return nil
+	end
+	local gvid, lvid, pos = vertex_near(pl.map, pl.x, pl.y, pl.z)
+	if not gvid then
+		log("! place %s: no game vertex on %s: the lobby stays on %s", pl.name, pl.map, level.name())
+		return nil
+	end
+	return { pl = pl, gvid = gvid, lvid = lvid, pos = pos }
+end
+
+-- Sends the level change (ChangeLevel acts at once: nothing after it runs).
+local function go_travel(t)
+	-- the engine saves "<name> - autosave" for the level change: the player's own is set aside first
+	if not boot().keep_autosaves() then
+		return false
+	end
+	if not boot().write_marker({ last = t.m.last, kp = t.m.kp, travelled = t.pl.map }) then
+		log("! travel: the marker could not be written: the lobby stays on %s", level.name())
+		pcall(boot().restore_autosaves)
+		return false
+	end
+	log("place %s is on %s: changing level (game vertex %s, %.1f m from the host's spot)", t.pl.name, t.pl.map, t.gvid,
+		math.sqrt((t.pos.x - t.pl.x) ^ 2 + (t.pos.y - t.pl.y) ^ 2 + (t.pos.z - t.pl.z) ^ 2))
+	boot().mark("changing level to " .. t.pl.map)
+	ChangeLevel(t.pos, t.lvid, t.gvid, VEC_ZERO)
+	return true
+end
+
 -- The host's marker starts the lobby; a client asks the host.
 local function take_lobby()
 	if is_client() then
@@ -1466,6 +1537,19 @@ local function take_lobby()
 		log("a client on %s: asking the host whether this is the lobby", level.name())
 	else
 		local m = boot().take_marker()
+		if m and m.travelled then
+			pcall(boot().restore_autosaves) -- the level change's autosave is the lobby's world
+		end
+		local okt, t = pcall(travel_target, m or { travelled = true })
+		if not okt then
+			log("! travel: %s: the lobby stays on %s", tostring(t), level.name())
+			t = nil
+		end
+		if t then
+			t.m, t.t = m, time_global()
+			travel, travelling = t, true
+			return
+		end
 		if m then
 			pending = { t = time_global() }
 			last_save = m.last
@@ -1478,6 +1562,7 @@ local function on_first_update()
 	boot().first_update()
 	place_maps = nil -- read again
 	boot().mark("the first update")
+	travel, travelling = nil, false -- arrived (take_lobby sets pending again)
 	if on_level() then
 		take_lobby()
 	end
@@ -1492,6 +1577,26 @@ local function on_update()
 	local now = time_global()
 	if lobby_game() then
 		pcall(boot().drop_lobby_autosave)
+		-- MCM's pages, a slice per update, from the first one: the click then
+		-- opens at once, or finishes only what is left (boot.mcm_gather_begin)
+		pcall(boot().mcm_gather_begin)
+		pcall(boot().mcm_gather_step)
+	end
+	if travel then
+		if now - travel.t >= SETTLE then
+			local t = travel
+			travel = nil
+			local ok, sent = pcall(go_travel, t)
+			if not (ok and sent) then
+				if not ok then
+					log("! travel: %s", tostring(sent))
+					pcall(boot().restore_autosaves) -- set aside, and no level change
+				end
+				travelling = false
+				pending = { t = now } -- the lobby here instead
+			end
+		end
+		return
 	end
 	if pending then
 		if not on_level() then
