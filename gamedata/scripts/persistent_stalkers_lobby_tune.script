@@ -1,0 +1,371 @@
+-- Persistent Stalkers: hand tuning the lobby's place (AGENTS.md, "The lobby":
+-- "Hand tuning"; user's request, 2026-11-16).
+--
+-- The host's slot, the lineup camera and the close-up moved while the lobby
+-- runs. Moves are in screen terms: right, up, and away from the camera
+-- (metres); turns in degrees (positive: to the right, and up). Each change is
+-- live and logs the place as its config lines; save_place() writes them into
+-- mod_system_persistent_stalkers.ltx (a moved host starts there after
+-- tools/build_lobby_spawn.sh). In the lobby window, F7 (debug mode) turns the
+-- same on keys.
+--
+-- Console, with the game started with -dbg:
+--   run_string persistent_stalkers_lobby_tune.where()
+--   run_string persistent_stalkers_lobby_tune.host_move(r, u, f)    host_turn(deg)
+--   run_string persistent_stalkers_lobby_tune.cam_move(r, u, f)     cam_turn(yaw, pitch)
+--   run_string persistent_stalkers_lobby_tune.close_move(r, u, f)   close_turn(yaw, pitch)
+--   run_string persistent_stalkers_lobby_tune.set_spacing(m)        save_place()
+
+local TARGETS = { "host", "camera", "close" }
+local STEPS = { 0.01, 0.05, 0.1, 0.25, 0.5, 1 }
+local DEFAULT_CAMERA = { 0, 1.6, 3.5, 180, 0 }
+local DEFAULT_CLOSE = { 0, 1.2, 1.5, 180, 0 }
+local KEY_MOVES = {
+	{ "DIK_LEFT", -1, 0, 0 }, { "DIK_RIGHT", 1, 0, 0 }, { "DIK_UP", 0, 0, 1 }, { "DIK_DOWN", 0, 0, -1 },
+	{ "DIK_PRIOR", 0, 1, 0 }, { "DIK_NEXT", 0, -1, 0 },
+}
+local KEY_TURNS = { { "DIK_Q", -1, 0 }, { "DIK_E", 1, 0 }, { "DIK_R", 0, 1 }, { "DIK_F", 0, -1 } }
+
+local tuning = nil -- { target = 1..3 } while the keys are on
+local step_i = 3
+
+local function log(fmt, ...)
+	local ok, text = pcall(string.format, fmt, ...)
+	printf("%s", "[PersistentStalkers] lobby: " .. (ok and text or fmt))
+end
+
+local function core()
+	return persistent_stalkers_lobby
+end
+
+local function place()
+	return persistent_stalkers_place
+end
+
+local function num(v)
+	return tonumber(v) or 0
+end
+
+local function copy5(t)
+	return { t[1], t[2], t[3], t[4], t[5] }
+end
+
+-- The place and the host's slot while the lobby runs, or nil (logged).
+local function live()
+	local o = core().live_origin()
+	local pl = o and core().load_cams()
+	if not pl then
+		log("! tuning: in the lobby, on a map with a place (persistent_stalkers_place.add(\"name\") makes one)")
+		return nil
+	end
+	return pl, o
+end
+
+-- The view's facing on the ground (the camera on screen; else back at the
+-- host) and its right.
+local function view_axes(o)
+	local _, dir = core().device_view()
+	local fx, fz = dir and dir.x, dir and dir.z
+	if not fx or type(fz) ~= "number" or fx * fx + fz * fz < 1e-6 then
+		fx, fz = -o.fx, -o.fz
+	end
+	local len = math.sqrt(fx * fx + fz * fz)
+	fx, fz = fx / len, fz / len
+	return fx, fz, fz, -fx
+end
+
+-- Screen right and away -> a world delta on the ground.
+local function world_delta(o, dr, df)
+	local fx, fz, rx, rz = view_axes(o)
+	return rx * dr + fx * df, rz * dr + fz * df
+end
+
+-- A world delta on the ground -> right and forward in the slots' frame.
+local function frame_delta(o, wx, wz)
+	local fr = place().frame(o.x, o.y, o.z, place().yaw_of(o.fx, o.fz))
+	return wx * fr.rx + wz * fr.rz, wx * fr.fx + wz * fr.fz
+end
+
+-- This machine's close-up: its slot's own (close_<n>) when it has one, else the shared one.
+local function close_name(pl)
+	local i = core().my_spot()
+	return pl.close_n[i] and ("close_" .. i) or "close"
+end
+
+local function close_set(pl, pose)
+	local i = core().my_spot()
+	if pl.close_n[i] then
+		pl.close_n[i] = pose
+	else
+		pl.close = pose
+	end
+end
+
+-- The place as it is now, as its config lines.
+function where()
+	local pl = live()
+	if not pl then
+		return
+	end
+	local L, f = place().list, place().fmt
+	local cl = core().close_pose(pl, core().my_spot())
+	log("place %s: host_position = %s; host_rotation = %s; spacing = %s; camera = %s; %s = %s%s", pl.name,
+		L({ pl.x, pl.y, pl.z }), f(pl.rot), f(core().TUNE.spacing), pl.camera and L(pl.camera) or "none",
+		close_name(pl), cl and L(cl) or "none", pl.dirty and " (not saved: save_place())" or "")
+	return pl
+end
+
+local function changed(pl)
+	pl.dirty = true
+	where()
+end
+
+-- The host's slot, and the other slots with it.
+function host_move(dr, du, df)
+	local pl, o = live()
+	if not pl then
+		return
+	end
+	local wx, wz = world_delta(o, num(dr), num(df))
+	pl.x, pl.y, pl.z = pl.x + wx, pl.y + num(du), pl.z + wz
+	o.x, o.y, o.z = pl.x, pl.y, pl.z
+	local ok, lv = pcall(level.vertex_id, vector():set(pl.x, pl.y, pl.z))
+	if ok and type(lv) == "number" and lv < 4294967295 then
+		o.lvid = lv
+	end
+	changed(pl)
+end
+
+-- The way the host faces; the slots and the cameras turn with it.
+function host_turn(deg)
+	local pl, o = live()
+	if not pl then
+		return
+	end
+	pl.rot = (pl.rot + num(deg)) % 360
+	o.fx, o.fz = place().facing(pl.rot)
+	core().aim()
+	changed(pl)
+end
+
+local function pose_move(o, pose, dr, du, df)
+	local c = copy5(pose)
+	local r, f = frame_delta(o, world_delta(o, num(dr), num(df)))
+	c[1], c[2], c[3] = c[1] + r, c[2] + num(du), c[3] + f
+	return c
+end
+
+local function pose_turn(pose, dyaw, dpitch)
+	local c = copy5(pose)
+	c[4] = (c[4] + num(dyaw)) % 360
+	c[5] = math.max(-89, math.min(89, c[5] + num(dpitch)))
+	return c
+end
+
+function cam_move(dr, du, df)
+	local pl, o = live()
+	if not pl then
+		return
+	end
+	pl.camera = pose_move(o, pl.camera or DEFAULT_CAMERA, dr, du, df)
+	changed(pl)
+end
+
+function cam_turn(dyaw, dpitch)
+	local pl = live()
+	if not pl then
+		return
+	end
+	pl.camera = pose_turn(pl.camera or DEFAULT_CAMERA, dyaw, dpitch)
+	changed(pl)
+end
+
+-- The close-up shows in Change profile: these open it.
+local function show_close()
+	local gui = core().GUI
+	if not core().is_editing() and gui then
+		pcall(gui.BeginEdit, gui)
+	end
+end
+
+local function hide_close()
+	local gui = core().GUI
+	if core().is_editing() and gui then
+		pcall(gui.EndEdit, gui, false)
+	end
+end
+
+function close_move(dr, du, df)
+	local pl, o = live()
+	if not pl then
+		return
+	end
+	show_close()
+	close_set(pl, pose_move(o, core().close_pose(pl, core().my_spot()) or DEFAULT_CLOSE, dr, du, df))
+	changed(pl)
+end
+
+function close_turn(dyaw, dpitch)
+	local pl = live()
+	if not pl then
+		return
+	end
+	show_close()
+	close_set(pl, pose_turn(core().close_pose(pl, core().my_spot()) or DEFAULT_CLOSE, dyaw, dpitch))
+	changed(pl)
+end
+
+-- Metres between slots.
+function set_spacing(m)
+	local pl, o = live()
+	m = tonumber(m)
+	if not pl then
+		return
+	end
+	if not m or m <= 0 then
+		log("! set_spacing: metres, more than 0")
+		return
+	end
+	core().TUNE.spacing = m
+	o.sp = m
+	changed(pl)
+end
+
+-- Writes the place as it is now (and the spacing) into the config.
+function save_place()
+	local pl = live()
+	if not pl then
+		return false
+	end
+	local sec = "ps_lobby_place_" .. pl.name
+	local L, f = place().list, place().fmt
+	local keys = {
+		{ sec, "host_position", L({ pl.x, pl.y, pl.z }) },
+		{ sec, "host_rotation", f(pl.rot) },
+		{ core().MAIN, "spacing", f(core().TUNE.spacing) },
+	}
+	if pl.camera then
+		keys[#keys + 1] = { sec, "camera", L(pl.camera) }
+	end
+	if pl.close then
+		keys[#keys + 1] = { sec, "close", L(pl.close) }
+	end
+	for i, c in pairs(pl.close_n) do
+		keys[#keys + 1] = { sec, "close_" .. i, L(c) }
+	end
+	if not place().write(keys) then
+		log("! the place could not be saved")
+		return false
+	end
+	pl.dirty = false
+	log("place %s saved (the game starts the actor at host_position after tools/build_lobby_spawn.sh)", pl.name)
+	where()
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- The keys (F7 in the lobby window, debug mode)
+
+local function is_key(dik, name)
+	return persistent_stalkers_lobby_ui.is_key(dik, name)
+end
+
+local function hint()
+	local gui = core().GUI
+	if not (gui and gui.hint) then
+		return
+	end
+	local s = STEPS[step_i]
+	local text = tuning and string.format("Tuning %s, step %s m / %s deg: arrows move, PgUp/PgDn up/down, Q/E turn, R/F tilt, [ ] spacing, -/= step, Tab next, Enter save, F7 off",
+		TARGETS[tuning.target], place().fmt(s), place().fmt(s * 10)) or ""
+	pcall(function() gui.hint:SetText(text) end)
+end
+
+local function set_target(t)
+	local was = tuning and TARGETS[tuning.target]
+	tuning.target = t
+	local now = TARGETS[t]
+	if now == "close" then
+		show_close()
+	elseif was == "close" then
+		hide_close()
+	end
+	log("tuning %s", now)
+	hint()
+	where()
+end
+
+-- True when the key was tuning's.
+function tuning_key(dik)
+	if not core().is_active() then
+		tuning = nil
+	end
+	if is_key(dik, "DIK_F7") then
+		if not DEV_DEBUG then
+			return false
+		end
+		if tuning then
+			if TARGETS[tuning.target] == "close" then
+				hide_close()
+			end
+			tuning = nil
+			log("tuning off")
+			hint()
+		elseif live() then
+			tuning = { target = 1 }
+			set_target(1)
+		end
+		return true
+	end
+	if not tuning then
+		return false
+	end
+	local what = TARGETS[tuning.target]
+	local step = STEPS[step_i]
+	for _, k in ipairs(KEY_MOVES) do
+		if is_key(dik, k[1]) then
+			local fn = what == "host" and host_move or what == "camera" and cam_move or close_move
+			fn(k[2] * step, k[3] * step, k[4] * step)
+			return true
+		end
+	end
+	for _, k in ipairs(KEY_TURNS) do
+		if is_key(dik, k[1]) then
+			local deg = step * 10
+			if what == "host" then
+				if k[2] ~= 0 then
+					host_turn(k[2] * deg)
+				end
+			elseif what == "camera" then
+				cam_turn(k[2] * deg, k[3] * deg)
+			else
+				close_turn(k[2] * deg, k[3] * deg)
+			end
+			return true
+		end
+	end
+	local spacing = core().TUNE.spacing
+	if is_key(dik, "DIK_LBRACKET") then
+		set_spacing(math.max(0.1, spacing - step))
+		return true
+	elseif is_key(dik, "DIK_RBRACKET") then
+		set_spacing(spacing + step)
+		return true
+	elseif is_key(dik, "DIK_MINUS") or is_key(dik, "DIK_EQUALS") then
+		step_i = math.max(1, math.min(#STEPS, step_i + (is_key(dik, "DIK_MINUS") and -1 or 1)))
+		log("tuning step %s m, %s degrees", place().fmt(STEPS[step_i]), place().fmt(STEPS[step_i] * 10))
+		hint()
+		return true
+	elseif is_key(dik, "DIK_TAB") then
+		set_target(tuning.target % #TARGETS + 1)
+		return true
+	elseif is_key(dik, "DIK_RETURN") then
+		save_place()
+		return true
+	end
+	return false
+end
+
+function tuning_on()
+	return tuning ~= nil
+end

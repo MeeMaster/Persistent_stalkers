@@ -1,0 +1,203 @@
+-- Persistent Stalkers: the new game screen with a profile (user's request, 2026-11-16).
+--
+-- The main menu's New game opens the modpack's own new game screen
+-- (ui_mm_faction_select.UINewGame; in G.A.M.M.A. ZCP 1.4's). With None or an
+-- empty profile selected it is left as it is: the empty profile adopts the
+-- character the new game makes. With a profile that has a character, the
+-- screen is the same but:
+--   - the faction is the profile's and cannot be changed (the faction button
+--     does nothing, Randomize keeps it), so the start locations listed are
+--     that faction's (the screen lists them by the selected faction);
+--   - the loadout is empty and hidden, and the money shows the profile's: the
+--     arrival applies the profile over the starting kit anyway;
+--   - everything else (name, icon, start location, story mode, difficulty,
+--     economy, hardcore, Azazel, survival, Warfare, ...) works as usual.
+-- The screen's class methods are wrapped once (prepare() is called by the
+-- main menu's ShowFactionUI before the dialog is made, so its callbacks take
+-- the wrapped methods); every wrap acts only on a dialog this script locked,
+-- and does nothing when a method is missing (another version of the screen).
+
+local function log(fmt, ...)
+	local ok, msg = pcall(string.format, fmt, ...)
+	printf("[PersistentStalkers] new game: %s", ok and msg or fmt)
+end
+
+FACTIONS = { stalker = true, bandit = true, csky = true, dolg = true, freedom = true, killer = true,
+	army = true, ecolog = true, monolith = true, renegade = true, greh = true, isg = true, zombied = true }
+
+-- The selected profile when it has a character: name, faction, character.
+function profile_lock()
+	local prof = rawget(_G, "persistent_stalkers_profile")
+	if not prof then
+		return nil
+	end
+	local ok, name = pcall(prof.selected_profile)
+	if not ok or not name or name == prof.NONE then
+		return nil
+	end
+	local okc, c = pcall(prof.character_of, name)
+	if not (okc and type(c) == "table") then
+		return nil
+	end
+	local f = type(c.faction) == "string" and c.faction:gsub("^actor_", "") or nil
+	if not FACTIONS[f] then
+		f = "stalker"
+	end
+	return { name = name, faction = f, money = tonumber(c.money) }
+end
+
+-- What a cached dialog was made for: "" unlocked, else name and faction.
+function key_of(lock)
+	return lock and (lock.name .. ":" .. lock.faction) or ""
+end
+
+local function cls()
+	local mod = rawget(_G, "ui_mm_faction_select")
+	local c = mod and mod.UINewGame
+	local t = type(c)
+	return (t == "table" or t == "userdata") and c or nil -- a class (luabind: userdata)
+end
+
+local function wrap(c, name, fn)
+	local orig = c[name]
+	if type(orig) ~= "function" then
+		log("! %s not found: left as it is", name)
+		return
+	end
+	c[name] = function(self, ...)
+		return fn(orig, self, ...)
+	end
+end
+
+local function note(lock)
+	return string.format("%%c[0,250,200,80]%s\\n%%c[0,200,200,200]%s\\n\\n",
+		string.format(game.translate_string("st_ps_newgame_head"), lock.name),
+		game.translate_string("st_ps_newgame_body"))
+end
+
+local function empty_loadout(self)
+	for _, cc in pairs(self.CC or {}) do
+		pcall(function() cc:Reinit({}, {}) end)
+		pcall(function() cc:Show(false) end)
+	end
+	for _, k in ipairs({ "text_points_used", "text_points_left" }) do
+		if self[k] then
+			pcall(function() self[k]:SetText("-") end)
+		end
+	end
+	self.points_used, self.points_left = 0, 0
+end
+
+WRAPPED = nil
+function install()
+	local c = cls()
+	if not c or rawequal(WRAPPED, c) then -- rawequal: no __eq on engine userdata
+		return c ~= nil
+	end
+	WRAPPED = c
+	wrap(c, "OnFactionClicked", function(orig, self, ...)
+		if self.pst_lock then
+			return
+		end
+		return orig(self, ...)
+	end)
+	wrap(c, "OnFactionSelect", function(orig, self, faction, ...)
+		if self.pst_lock then
+			faction = self.pst_lock.faction
+		end
+		return orig(self, faction, ...)
+	end)
+	wrap(c, "LoadFaction", function(orig, self, rand, faction, ...)
+		if self.pst_lock then
+			faction = self.pst_lock.faction
+		end
+		return orig(self, rand, faction, ...)
+	end)
+	wrap(c, "OnRandomize", function(orig, self, ...)
+		local lock = self.pst_lock
+		if not lock then
+			return orig(self, ...)
+		end
+		-- Randomize picks the faction from the table: only the profile's
+		local all = self.table_faction
+		self.table_faction = { [lock.faction] = true }
+		local ok, err = pcall(orig, self, ...)
+		self.table_faction = all
+		pcall(function() self:UpdateDescr() end)
+		if not ok then
+			log("! Randomize: %s", tostring(err))
+		end
+	end)
+	wrap(c, "LoadLoadout", function(orig, self, ...)
+		if self.pst_lock then
+			return empty_loadout(self)
+		end
+		return orig(self, ...)
+	end)
+	wrap(c, "UpdateMoney", function(orig, self, ...)
+		local r = orig(self, ...)
+		local lock = self.pst_lock
+		if lock and self.text_money then
+			pcall(function()
+				self.text_money:SetText(lock.money and (tostring(math.floor(lock.money)) .. " RU")
+					or game.translate_string("st_ps_newgame_money"))
+			end)
+		end
+		return r
+	end)
+	wrap(c, "UpdateDescr", function(orig, self, ...)
+		local r = orig(self, ...)
+		local lock = self.pst_lock
+		if lock and self.text_descr then
+			pcall(function()
+				self.text_descr:SetText(note(lock) .. self.text_descr:GetText())
+				self.text_descr:AdjustHeightToText()
+				self.text_descr:SetWndSize(vector2():set(self.text_descr:GetWidth(), self.text_descr:GetHeight() + 10))
+				if self.scroll_desc then
+					self.scroll_desc:Clear()
+					self.scroll_desc:AddWindow(self.text_descr, true)
+					self.text_descr:SetAutoDelete(false)
+				end
+			end)
+		end
+		return r
+	end)
+	log("the new game screen is wrapped")
+	return true
+end
+
+-- The main menu's ShowFactionUI: owner is the main menu (or the lobby window).
+-- Drops a cached dialog made for another profile, so a new one is made.
+function before_show(owner)
+	local ok = pcall(install)
+	if not ok then
+		return
+	end
+	local lock = profile_lock()
+	local dlg = owner.new_game_dlg
+	if dlg and (dlg.pst_key or "") ~= key_of(lock) then
+		owner.new_game_dlg = nil
+	end
+end
+
+-- After the dialog is made or taken from the cache: lock it to the profile.
+function after_make(dlg)
+	if not dlg or not WRAPPED then
+		return
+	end
+	local lock = profile_lock()
+	local key = key_of(lock)
+	if (dlg.pst_key or "") == key then
+		return
+	end
+	dlg.pst_key = key
+	dlg.pst_lock = lock
+	if lock then
+		local ok, err = pcall(function() dlg:OnFactionSelect(lock.faction) end)
+		if ok then
+			log("playing as %s: faction %s, the profile's gear", lock.name, lock.faction)
+		else
+			log("! locking to %s failed: %s", lock.name, tostring(err))
+		end
+	end
+end

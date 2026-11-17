@@ -2,8 +2,9 @@
 -- main menu").
 --
 -- ui_main_menu.script attaches it (attach(mm)) each time the menu is made:
--- at the main menu, and as the pause menu in a game. It sits left to middle;
--- the game's options are on the right.
+-- at the main menu, and as the pause menu in a game. On those, the default
+-- skin puts a compact list (no inventory) on the left half and leaves the
+-- right half to the game's options. The debug window keeps the full loadout.
 --
 -- Left: the profiles, None first. At the main menu a click selects: that is
 -- the profile every game started, loaded or joined from here is played with
@@ -29,8 +30,9 @@
 -- wider than tall, so widths are multiplied by utils_xml.screen_ratio() to
 -- keep icons their shape.
 
-local XML_FILE = "ui_persistent_stalkers.xml" -- the full layout; also the new/remove boxes
-local ROWS = 12 -- profile rows shown at once; the arrows page through more
+local XML_FILE = "ui_persistent_stalkers.xml" -- the main menu's layout; also the new/remove boxes
+local FULL_XML = "ui_persistent_stalkers_full.xml" -- the debug window: the loadout
+local ROWS = 12 -- profile rows in the debug window; the main menu's skin sets its own
 
 -- The look of the main menu and its panel (AGENTS.md, "Skins"). These are
 -- the default skin's values; persistent_stalkers_skin.get() (the default
@@ -46,33 +48,39 @@ local ROWS = 12 -- profile rows shown at once; the arrows page through more
 --   frame           draw menu:background, a frame (it needs a frame
 --                   texture: _back, _l, _lt, … parts; false: no node needed)
 --   rows            profile rows shown at once
+--   loadout         the equipment column (false: the layout has no inventory)
 --   backpack, note, what  draw the backpack grid, the note under the list,
 --                   the line about what playing with the row means
 --   compact         short details: name, money, rank, faction and class
 --   head            colour code of the name line
+-- The debug window copies this. The main and pause menus take skin(), which
+-- lays the default skin's get() over it (the left-half list, no inventory).
 local DEFAULT_SKIN = {
 	name = "default",
 	own_background = true,
 	move_options = true,
-	layout = XML_FILE,
+	layout = FULL_XML,
 	frame = true,
 	rows = ROWS,
+	loadout = true,
 	backpack = true,
 	note = true,
 	what = true,
 	compact = false,
 	head = "%c[255,235,200,75]",
-	lobby = true, -- the main menu's "Enter the lobby" button (node menu:btn_lobby)
+	lobby = true, -- the main menu's "Start the lobby" button (node menu:btn_lobby)
 }
 
 -- The lobby window's panel (persistent_stalkers_lobby): compact, on the
--- left, so the models in the world behind stay in view. Not a skin's choice.
+-- left while a profile is being changed, hidden on the lineup. The backpack
+-- fills the space under the equipment column. Not a skin's choice.
 local LOBBY_SKIN = {
 	name = "lobby",
 	layout = "ui_persistent_stalkers_lobby.xml",
 	frame = true,
 	rows = 8,
-	backpack = false,
+	backpack = true,
+	bag_below = true,
 	note = false,
 	what = false,
 	compact = true,
@@ -323,27 +331,42 @@ function ProfilePanel:Build()
 	end
 	if self.how == "menu" and self.skin.lobby then
 		self.btn_lobby = self:Button("menu:btn_lobby", "pst_btn_lobby", self.OnLobby)
-		self.btn_lobby:TextControl():SetText("Enter the lobby (spike)")
+		self.btn_lobby:TextControl():SetText("Start the lobby")
 	end
 	-- the skin leaves some parts out; their nodes need not be in its layout
 	if self.skin.note then
 		self.note = xml:InitTextWnd("menu:note", wnd)
 	end
 
-	self.details = xml:InitTextWnd("menu:details", wnd)
-	self.equip = xml:InitStatic("menu:equip", wnd)
-	self:BuildColumn()
+	if self.skin.details ~= false then
+		self.details = xml:InitTextWnd("menu:details", wnd)
+	end
+	if self.skin.loadout ~= false then
+		self.equip = xml:InitStatic("menu:equip", wnd)
+		self:BuildColumn()
+	end
 	if self.skin.backpack then
 		self.bag = xml:InitStatic("menu:bag", wnd)
 		self.bag_caption = xml:InitTextWnd("menu:bag_caption", wnd)
-		-- the backpack goes right of the column (whose width depends on the
-		-- screen), up to its own right edge in the layout
-		local bpos = self.bag:GetWndPos()
-		local right = bpos.x + self.bag:GetWidth()
-		local bx = self.equip:GetWndPos().x + self.equip:GetWidth() + 10
-		at(self.bag, bx, bpos.y, math.max(40, right - bx), self.bag:GetHeight())
-		at(self.bag_caption, bx, self.bag_caption:GetWndPos().y, math.max(40, right - bx), self.bag_caption:GetHeight())
 		self.bag_caption:SetText("Backpack")
+		if self.skin.bag_below then
+			-- the lobby's close-up: the whole inventory under the loadout,
+			-- across the panel, in the space below the column
+			local ep = self.equip:GetWndPos()
+			local top = ep.y + self.equip:GetHeight() + 8
+			local pw = math.max(40, self.wnd:GetWidth() - 24)
+			at(self.bag_caption, 12, top, pw, 18)
+			local by = top + 20
+			at(self.bag, 12, by, pw, math.max(40, self.wnd:GetHeight() - by - 12))
+		elseif not self.skin.bag_stay then
+			-- the backpack goes right of the column (whose width depends on the
+			-- screen), up to its own right edge in the layout
+			local bpos = self.bag:GetWndPos()
+			local right = bpos.x + self.bag:GetWidth()
+			local bx = self.equip:GetWndPos().x + self.equip:GetWidth() + 10
+			at(self.bag, bx, bpos.y, math.max(40, right - bx), self.bag:GetHeight())
+			at(self.bag_caption, bx, self.bag_caption:GetWndPos().y, math.max(40, right - bx), self.bag_caption:GetHeight())
+		end
 	end
 	if self.skin.what then
 		self.what = xml:InitTextWnd("menu:what", wnd)
@@ -479,13 +502,18 @@ function ProfilePanel:Reveal(name)
 end
 
 -- Makes name the selection: the profile the next game is played with. Only
--- at the main menu.
+-- at the main menu. In the lobby's editor a row only wears it (previewing);
+-- Done is what selects.
 function ProfilePanel:Select(name)
 	if self.in_game then
 		return false
 	end
 	local p = profile()
-	if name ~= p.current_profile() then
+	local preview = false
+	if self.how == "lobby" and persistent_stalkers_lobby and persistent_stalkers_lobby.previewing then
+		preview = persistent_stalkers_lobby.previewing()
+	end
+	if not preview and name ~= p.current_profile() then
 		if not p.choose(name) then
 			log("! menu: %s could not be selected", tostring(name))
 			return false
@@ -502,12 +530,12 @@ function ProfilePanel:Select(name)
 	return true
 end
 
--- The main menu's "Enter the lobby": a new game that stays on fake_start.
+-- The main menu's "Start the lobby": a new game that stays where it starts.
 function ProfilePanel:OnLobby()
 	if self.how ~= "menu" then
 		return
 	end
-	persistent_stalkers_lobby.enter(self.mm)
+	persistent_stalkers_lobby_boot.enter(self.mm)
 end
 
 function ProfilePanel:OnRow(i)
@@ -638,7 +666,9 @@ function ProfilePanel:ShowChosen()
 		lines[#lines + 1] = self.skin.compact and "Empty: takes the character of the first game played with it."
 			or "Empty: no character yet."
 	end
-	self.details:SetText(table.concat(lines, " \\n"))
+	if self.details then
+		self.details:SetText(table.concat(lines, " \\n"))
+	end
 	guard("loadout", self.ShowLoadout, self, c)
 	if self.what then
 		self.what:SetText(self:Describe(name, c ~= nil))
@@ -788,6 +818,9 @@ end
 
 function ProfilePanel:ShowLoadout(c)
 	self:ClearLoadout()
+	if not self.equip then
+		return
+	end
 	self.equip_layer = self.xml:InitStatic("menu:layer", self.equip)
 	local EW, EH = self.equip:GetWidth(), self.equip:GetHeight()
 	at(self.equip_layer, 0, 0, EW, EH)
@@ -950,6 +983,10 @@ end
 
 -- Each frame, from the main menu's Update: the item card under the cursor.
 function ProfilePanel:Update()
+	-- xrRazom's gear screen skipped when joining a lobby (persistent_stalkers_lobby)
+	if self.how == "menu" then
+		pcall(function() persistent_stalkers_lobby_join.guard_faction_ui() end)
+	end
 	if not self.info then
 		return
 	end
@@ -1256,8 +1293,8 @@ end
 -- could not be built (the menu then works without it).
 function attach(mm)
 	local how = level.present() and "pause" or "menu"
-	if how == "menu" and persistent_stalkers_lobby and persistent_stalkers_lobby.main_menu_check then
-		local ok, err = pcall(persistent_stalkers_lobby.main_menu_check)
+	if how == "menu" then
+		local ok, err = pcall(function() persistent_stalkers_lobby_boot.main_menu_check() end)
 		if not ok then
 			log("! the lobby's main menu check failed: %s", tostring(err))
 		end

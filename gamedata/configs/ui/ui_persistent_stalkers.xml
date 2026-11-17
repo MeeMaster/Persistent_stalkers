@@ -1,101 +1,83 @@
 <w>
-	<!-- The main menu with the profile panel (ui_main_menu.script, persistent_stalkers_menu.script).
-	     Positions are 1024x768 units. The game's options (the engine's button list) come from the
-	     stock ui_mm_main.xml and are moved to the right by the script (options); the background
-	     here is G.A.M.M.A.'s with its logo and badges moved into the right column.
-	     Placeholder look: stock frame, button, edit box and font textures. Rows, slot boxes,
-	     icons, bars and counts are placed by the script; their sizes here are overridden. -->
+	<!-- The main menu (ui_main_menu.script, persistent_stalkers_menu.script).
+	     Positions are 1024x768 units. The profile box is on the left: the list,
+	     and beside it the inventory (the equipment column and the backpack).
+	     The game's options stay the engine's list in the right half, with no
+	     frame of their own. The debug F8 window uses ui_persistent_stalkers_full.xml. -->
 
 	<background x="0" y="0" width="1024" height="768">
 		<auto_static x="0" y="0" width="1024" height="768" stretch="1">
 			<texture x="0" y="0" width="1920" height="1080">ui\ui_background_new</texture>
 		</auto_static>
-		<auto_static x="782" y="14" width="230" height="133" stretch="1">
+		<auto_static x="653" y="36" width="230" height="133" stretch="1">
 			<texture>GAMMAMainMenuLogo.dds</texture>
 		</auto_static>
-		<auto_static x="787" y="152" width="55" height="64" stretch="1">
+		<auto_static x="658" y="185" width="55" height="64" stretch="1">
 			<texture>ui\moty2018</texture>
 		</auto_static>
-		<auto_static x="842" y="152" width="55" height="64" stretch="1">
+		<auto_static x="713" y="185" width="55" height="64" stretch="1">
 			<texture>ui\moty2019</texture>
 		</auto_static>
-		<auto_static x="897" y="152" width="55" height="64" stretch="1">
+		<auto_static x="768" y="185" width="55" height="64" stretch="1">
 			<texture>LogoAMCM.dds</texture>
 		</auto_static>
-		<auto_static x="952" y="152" width="55" height="64" stretch="1">
+		<auto_static x="823" y="185" width="55" height="64" stretch="1">
 			<texture>LogoGAMMA.dds</texture>
 		</auto_static>
 	</background>
 
-	<!-- Where the engine's button list goes: its buttons region (220 wide, 8 from the
-	     window's left in the stock layout) ends 16 units from the right edge. -->
-	<options x="780" y="419" width="10" height="10"/>
+	<!-- The engine's button list, in the right half. Its button region is 220
+	     wide and starts 8 units in from this spot, so x 650 centres it there. -->
+	<options x="650" y="330" width="10" height="10"/>
 
 	<menu>
-		<!-- the panel: left to middle -->
-		<panel x="12" y="12" width="756" height="720"/>
-		<background x="0" y="0" width="756" height="720" stretch="1">
+		<!-- list on the left of the box; inventory on the right of it.
+		     8 rows from row, 3 apart. The script sets the column's width from
+		     its height and leaves the backpack where it is (bag_stay). -->
+		<panel x="12" y="36" width="496" height="700"/>
+		<background x="0" y="0" width="496" height="700" stretch="1">
 			<texture>ui_inGame2_hint_wnd_main_window</texture>
 		</background>
-		<title x="20" y="10" width="716" height="30" stretch="1">
-			<text font="letterica25" r="230" g="220" b="190" align="l" vert_align="c"/>
+		<title x="12" y="8" width="164" height="22" stretch="1">
+			<text font="letterica18" r="230" g="220" b="190" align="l" vert_align="c"/>
 		</title>
-
-		<!-- Left: the profiles (ROWS rows from row's position, 3 apart), paging, a new profile -->
-		<list_title x="18" y="46" width="184" height="22" stretch="1">
-			<text font="letterica18" r="200" g="200" b="200" align="l" vert_align="c"/>
+		<list_title x="12" y="34" width="164" height="16" stretch="1">
+			<text font="letterica16" r="200" g="200" b="200" align="l" vert_align="c"/>
 		</list_title>
-		<!-- a check button: the selected row is kept checked (pressed); its text is row_text -->
-		<row x="18" y="72" width="184" height="26" stretch="1">
+		<row x="12" y="54" width="164" height="24" stretch="1">
 			<texture>ui_button_ordinary</texture>
 		</row>
-		<row_text x="0" y="0" width="10" height="26" stretch="1">
+		<row_text x="0" y="0" width="10" height="24" stretch="1">
 			<text font="letterica16" r="225" g="220" b="200" align="l" vert_align="c"/>
 		</row_text>
-		<btn_up x="18" y="422" width="90" height="24" check_mode="0" stretch="1">
+		<btn_up x="12" y="278" width="78" height="24" check_mode="0" stretch="1">
 			<text font="letterica16" r="225" g="220" b="200"/>
 			<texture>ui_button_ordinary</texture>
 		</btn_up>
-		<btn_down x="112" y="422" width="90" height="24" check_mode="0" stretch="1">
+		<btn_down x="98" y="278" width="78" height="24" check_mode="0" stretch="1">
 			<text font="letterica16" r="225" g="220" b="200"/>
 			<texture>ui_button_ordinary</texture>
 		</btn_down>
-		<btn_new x="18" y="456" width="184" height="30" check_mode="0" stretch="1">
-			<text font="letterica18" r="225" g="220" b="200"/>
+		<btn_new x="12" y="308" width="78" height="26" check_mode="0" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200"/>
 			<texture>ui_button_ordinary</texture>
 		</btn_new>
-		<!-- shown for a selected profile other than default, at the main menu -->
-		<btn_remove x="18" y="492" width="184" height="30" check_mode="0" stretch="1">
-			<text font="letterica18" r="225" g="220" b="200"/>
+		<btn_remove x="98" y="308" width="78" height="26" check_mode="0" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200"/>
 			<texture>ui_button_ordinary</texture>
 		</btn_remove>
-		<!-- the debug switch window (F8 with -dbg) only, in place of New and Remove -->
-		<btn_switch x="18" y="456" width="184" height="30" check_mode="0" stretch="1">
-			<text font="letterica18" r="225" g="220" b="200"/>
-			<texture>ui_button_ordinary</texture>
-		</btn_switch>
-		<btn_close x="18" y="492" width="184" height="30" check_mode="0" stretch="1">
-			<text font="letterica18" r="225" g="220" b="200"/>
-			<texture>ui_button_ordinary</texture>
-		</btn_close>
-		<!-- the main menu only: the lobby spike (persistent_stalkers_lobby.enter) -->
-		<btn_lobby x="18" y="528" width="184" height="30" check_mode="0" stretch="1">
+		<btn_lobby x="12" y="342" width="164" height="28" check_mode="0" stretch="1">
 			<text font="letterica16" r="225" g="220" b="200"/>
 			<texture>ui_button_ordinary</texture>
 		</btn_lobby>
-		<!-- under the list: the save mode -->
-		<note x="18" y="566" width="184" height="140" stretch="1" complex_mode="1">
-			<text font="letterica16" r="170" g="170" b="160" align="l" vert_align="t" complex_mode="1"/>
-		</note>
+		<bag_caption x="12" y="378" width="164" height="16" stretch="1">
+			<text font="letterica16" r="170" g="170" b="160" align="l" vert_align="c"/>
+		</bag_caption>
+		<bag x="12" y="396" width="164" height="288" stretch="1">
+			<texture r="12" g="14" b="12" a="160">ui_inGame2_white_rect</texture>
+		</bag>
 
-		<!-- Right of the list: the selected row's name and stats; its equipment as G.A.M.M.A.'s
-		     inventory shows it (the script sets the column's width from its height), the backpack
-		     beside it (the script puts it right of the column, up to bag's right edge); what
-		     playing with it does -->
-		<details x="214" y="46" width="530" height="76" stretch="1" complex_mode="1">
-			<text font="letterica16" r="210" g="210" b="210" align="l" vert_align="t" complex_mode="1"/>
-		</details>
-		<equip x="214" y="128" width="240" height="500" stretch="1"/>
+		<equip x="188" y="8" width="200" height="620" stretch="1"/>
 		<inv_back x="0" y="0" width="10" height="10" stretch="1">
 			<texture>ui_inGame2_inventory_back</texture>
 		</inv_back>
@@ -108,12 +90,6 @@
 		<slot_bar x="0" y="0" width="10" height="6" stretch="1">
 			<texture r="142" g="149" b="149">ui_inGame2_inventory_status_bar</texture>
 		</slot_bar>
-		<bag_caption x="464" y="128" width="280" height="18" stretch="1">
-			<text font="letterica16" r="170" g="170" b="160" align="l" vert_align="c"/>
-		</bag_caption>
-		<bag x="464" y="148" width="280" height="480" stretch="1">
-			<texture r="12" g="14" b="12" a="160">ui_inGame2_white_rect</texture>
-		</bag>
 		<layer x="0" y="0" width="10" height="10"/>
 		<slot_bg x="0" y="0" width="10" height="10" stretch="1">
 			<texture r="40" g="42" b="38" a="200">ui_inGame2_white_rect</texture>
@@ -125,9 +101,6 @@
 		<count x="0" y="0" width="30" height="13" stretch="1">
 			<text font="letterica16" r="235" g="235" b="225" align="r" vert_align="c"/>
 		</count>
-		<what x="214" y="636" width="530" height="74" stretch="1" complex_mode="1">
-			<text font="letterica16" r="210" g="210" b="210" align="l" vert_align="t" complex_mode="1"/>
-		</what>
 	</menu>
 
 	<!-- The "New profile" box, shown over the main menu -->

@@ -17,20 +17,22 @@
 	-----------------------------------------------------
 
 	Persistent Stalkers (branch menu_load): this is the main menu MCM ships (the stock
-	one with its MCM button), with three changes, all marked "Persistent
+	one with its MCM button), with four changes, all marked "Persistent
 	Stalkers" below. The skin (persistent_stalkers_menu.skin(), AGENTS.md
 	"Skins") decides the first two:
 	- the background comes from ui_persistent_stalkers.xml: G.A.M.M.A.'s,
-	  with its logo and badges in the right column (skin own_background;
+	  with its logo and badges in the right half (skin own_background;
 	  otherwise ui_mm_main.xml's, as stock, which menu mods such as ROMEO
-	  patch);
+	  patch). There is no frame around the game's options;
 	- the game's options (the engine's button list, still read from
 	  ui_mm_main.xml, so other mods' buttons such as xrRazom's Connect stay)
-	  are moved to the right side of the screen (skin move_options; otherwise
-	  left where the menu mod puts them: ROMEO hides them and draws its own);
+	  are moved into the right half (skin move_options; otherwise left where
+	  the menu mod puts them: ROMEO hides them and draws its own);
 	- the profile panel (persistent_stalkers_menu.attach) sits where the
 	  skin's layout puts it: at the main menu it chooses the profile every game
-	  is played with, in a game (the pause menu) it shows the one in use.
+	  is played with, in a game (the pause menu) it shows the one in use;
+	- the new game screen, with a profile that has a character, keeps the
+	  profile's faction and picks no loadout (persistent_stalkers_newgame).
 	The class, its methods, the control names and the callbacks
 	(main_menu_on_init, main_menu_on_keyboard, main_menu_on_quit) are kept as
 	they are: MCM and xrRazom hook and patch them.
@@ -109,6 +111,15 @@ function main_menu:InitControls()
 	local _disc = xml:InitStatic    ("static_disclaimer",self)
 	_disc:TextControl():SetTextColor(GetARGB(223, 223, 223, 223))
 	_disc:TextControl():SetText     (game.translate_string("ui_mm_disclaimer"))
+	-- Persistent Stalkers: the disclaimer and the version sit in the right
+	-- half, under the button list, so they are not drawn over the profile box.
+	if pst_skin.move_options then
+		pcall(function()
+			_disc:SetWndPos(vector2():set(536, 688))
+			_disc:SetWndSize(vector2():set(464, 56))
+			_ver:SetWndPos(vector2():set(536, 746))
+		end)
+	end
 	
 	-- Message Window 
 	self.msg_wnd = xml:InitFrame("msg_wnd:background",self)
@@ -345,8 +356,17 @@ function main_menu:StartGame()
 end
 
 function main_menu:ShowFactionUI()
+	-- Persistent Stalkers: the new game screen locked to the selected profile
+	local ok_ng, psng = pcall(function() return persistent_stalkers_newgame end)
+	psng = ok_ng and type(psng) == "table" and psng or nil
+	if psng then
+		pcall(psng.before_show, self)
+	end
 	if self.new_game_dlg == nil then
 		self.new_game_dlg = ui_mm_faction_select.UINewGame(self)
+	end
+	if psng then
+		pcall(psng.after_make, self.new_game_dlg)
 	end
 
 	self.new_game_dlg:ShowDialog(true)

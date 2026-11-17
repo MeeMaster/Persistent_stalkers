@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<string_table>
+	<string id="st_ps_newgame_head">
+		<text>Persistent Stalkers: playing as %s</text>
+	</string>
+	<string id="st_ps_newgame_body">
+		<text>The faction is this profile's, and the start locations are its faction's. No loadout is picked: on arrival the character gets the profile's gear, money, rank and skills. To start from scratch, select None or a new profile at the main menu.</text>
+	</string>
+	<string id="st_ps_newgame_money">
+		<text>the profile's</text>
+	</string>
+</string_table>

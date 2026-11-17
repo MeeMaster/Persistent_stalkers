@@ -1,15 +1,15 @@
 <w>
 	<!-- The lobby window (persistent_stalkers_lobby.script, the spike). Positions are 1024x768
-	     units. The profile panel (persistent_stalkers_menu.script, its "lobby" use) is compact
-	     and on the left, so the row of models in the world behind stays in view: the camera
-	     stands to the row's right (TUNE.cam_side), which puts the row right of the middle.
+	     units. The lineup leaves the models clear: a plaque over each player, the options
+	     along the bottom. Change profile opens the panel on the left (the script moves it).
 	     menu: the panel (children relative to it). Left: the name and three facts, 8 rows,
 	     Up / Down, New and Remove. Right: the equipment column (its width follows from its
-	     height and the screen: about 162 units on 16:9). No backpack.
-	     lobby: the hint under the panel, the main menu's options on the right. -->
+	     height and the screen: about 162 units on 16:9). The backpack fills the panel
+	     under that column (the script places it).
+	     lobby: the hint, the plates, Change profile and Done, the main menu's options. -->
 	<menu>
-		<panel x="12" y="120" width="344" height="386"/>
-		<background x="0" y="0" width="344" height="386" stretch="1">
+		<panel x="12" y="12" width="380" height="630"/>
+		<background x="0" y="0" width="380" height="630" stretch="1">
 			<texture>ui_inGame2_hint_wnd_main_window</texture>
 		</background>
 		<title x="12" y="8" width="320" height="22" stretch="1">
@@ -45,6 +45,12 @@
 		</btn_remove>
 
 		<equip x="170" y="34" width="162" height="340" stretch="1"/>
+		<bag_caption x="12" y="390" width="356" height="18" stretch="1">
+			<text font="letterica16" r="170" g="170" b="160" align="l" vert_align="c"/>
+		</bag_caption>
+		<bag x="12" y="410" width="356" height="208" stretch="1">
+			<texture r="12" g="14" b="12" a="160">ui_inGame2_white_rect</texture>
+		</bag>
 		<inv_back x="0" y="0" width="10" height="10" stretch="1">
 			<texture>ui_inGame2_inventory_back</texture>
 		</inv_back>
@@ -71,20 +77,96 @@
 	</menu>
 
 	<lobby>
-		<hint x="14" y="514" width="340" height="56" stretch="1" complex_mode="1">
-			<text font="letterica16" r="225" g="220" b="200" align="l" vert_align="t" complex_mode="1"/>
+		<hint x="12" y="688" width="760" height="32" stretch="1" complex_mode="1">
+			<text font="letterica16" r="225" g="220" b="200" align="l" vert_align="c" complex_mode="1"/>
 		</hint>
-		<!-- the main menu's options, on the right where the main menu has them (its
-		     "options" node, x 780); the first one's place, the others 38 under it -->
-		<option x="780" y="400" width="220" height="34" check_mode="0" stretch="1">
-			<text font="graffiti19" r="240" g="240" b="240" align="c" vert_align="c"/>
+		<!-- over a player: xrRazom name, <profile>, faction, class. graffiti22 is the bold face with the black edge. The script places one per spot. -->
+		<plate x="0" y="0" width="220" height="100" stretch="1" complex_mode="1">
+			<text font="graffiti22" r="255" g="255" b="255" align="c" vert_align="b" complex_mode="1"/>
+		</plate>
+		<!-- the bottom row. Change profile leads it; Done takes that place in the editor.
+		     The script lays these out, two rows when the captions need the width. -->
+		<btn_change x="8" y="728" width="240" height="28" check_mode="0" stretch="1">
+			<text font="letterica16" r="240" g="240" b="240" align="c" vert_align="c"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_change>
+		<btn_done x="8" y="728" width="240" height="28" check_mode="0" stretch="1">
+			<text font="letterica16" r="240" g="240" b="240" align="c" vert_align="c"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_done>
+		<option x="8" y="728" width="240" height="28" check_mode="0" stretch="1">
+			<text font="letterica16" r="240" g="240" b="240" align="c" vert_align="c"/>
 			<texture>ui_button_ordinary</texture>
 		</option>
-		<!-- the host, with an xrRazom session: lets players into the lobby (experimental);
-		     placed under the options by the script -->
-		<btn_admit x="780" y="680" width="220" height="26" check_mode="0" stretch="1">
+	</lobby>
+
+	<!-- Close-up only. The values column, then a second box of the same
+	     width: Reset faction, Goodwill, Keep and Reset side by side. -->
+	<goodwill>
+		<background x="812" y="12" width="200" height="432" stretch="1">
+			<texture>ui_inGame2_hint_wnd_main_window</texture>
+		</background>
+		<title x="8" y="6" width="184" height="20" stretch="1">
+			<text font="letterica16" r="230" g="220" b="190" align="c" vert_align="c"/>
+		</title>
+		<head_fac x="68" y="28" width="46" height="14" stretch="1">
+			<text font="letterica16" r="170" g="170" b="160" align="c" vert_align="c"/>
+		</head_fac>
+		<head_you x="114" y="28" width="44" height="14" stretch="1">
+			<text font="letterica16" r="170" g="170" b="160" align="c" vert_align="c"/>
+		</head_you>
+		<row x="38" y="46" width="124" height="28" check_mode="1" stretch="1">
 			<text font="letterica16" r="225" g="220" b="200"/>
 			<texture>ui_button_ordinary</texture>
-		</btn_admit>
-	</lobby>
+		</row>
+		<patch x="4" y="2" width="26" height="26" stretch="1">
+			<texture>ui_mm_faction_stalker</texture>
+		</patch>
+		<num x="32" y="4" width="46" height="20" stretch="1" complex_mode="1">
+			<text font="letterica16" r="210" g="210" b="210" align="c" vert_align="c" complex_mode="1"/>
+		</num>
+		<name x="8" y="408" width="184" height="18" stretch="1">
+			<text font="letterica16" r="230" g="220" b="160" align="c" vert_align="c"/>
+		</name>
+	</goodwill>
+	<faction_box>
+		<background x="812" y="452" width="200" height="92" stretch="1">
+			<texture>ui_inGame2_hint_wnd_main_window</texture>
+		</background>
+		<title x="8" y="6" width="184" height="20" stretch="1">
+			<text font="letterica16" r="230" g="220" b="190" align="c" vert_align="c"/>
+		</title>
+		<sub x="8" y="28" width="184" height="18" stretch="1">
+			<text font="letterica16" r="200" g="200" b="190" align="c" vert_align="c"/>
+		</sub>
+		<btn_keep x="8" y="52" width="88" height="28" check_mode="0" stretch="1">
+			<text font="letterica16" r="240" g="240" b="240" align="c" vert_align="c"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_keep>
+		<btn_reset x="104" y="52" width="88" height="28" check_mode="0" stretch="1">
+			<text font="letterica16" r="240" g="240" b="240" align="c" vert_align="c"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_reset>
+	</faction_box>
+
+	<!-- The warning for either faction button. Enter does nothing. -->
+	<faction_warn>
+		<background x="212" y="160" width="600" height="448" stretch="1">
+			<texture>ui_inGame2_hint_wnd_main_window</texture>
+		</background>
+		<title x="232" y="176" width="560" height="26" stretch="1">
+			<text font="letterica18" r="230" g="120" b="90" align="l" vert_align="c"/>
+		</title>
+		<message x="232" y="210" width="560" height="320" stretch="1" complex_mode="1">
+			<text font="letterica16" r="210" g="210" b="200" align="l" vert_align="t" complex_mode="1"/>
+		</message>
+		<btn_go x="232" y="548" width="270" height="32" check_mode="0" stretch="1">
+			<text font="letterica16" r="240" g="240" b="240" align="c" vert_align="c"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_go>
+		<btn_cancel x="522" y="548" width="270" height="32" check_mode="0" stretch="1">
+			<text font="letterica16" r="225" g="220" b="200" align="c" vert_align="c"/>
+			<texture>ui_button_ordinary</texture>
+		</btn_cancel>
+	</faction_warn>
 </w>

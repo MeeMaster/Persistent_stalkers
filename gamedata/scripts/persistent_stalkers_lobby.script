@@ -1,126 +1,116 @@
--- Persistent Stalkers: the lobby spike (AGENTS.md, "The lobby (spike)").
+-- Persistent Stalkers: the lobby (AGENTS.md, "The lobby").
 --
 -- A character-select room in a real, loaded world, so the characters can be
--- shown as models: the players stand on five spots in front of a camera that
--- does not move, pick their profile in a small panel, and see their model
--- wear it. From there the host loads a game.
+-- shown as models: the players stand on five slots in front of a camera, pick
+-- their profile, and see their model wear it. From there the host loads a
+-- game or starts a new one.
 --
--- The world is Anomaly's own fake_start level: every new game boots into it,
--- and only leaves because the faction-select script calls ChangeLevel when a
--- faction was chosen. A new game started with none stays there. enter()
--- (the main menu panel's "Enter the lobby") clears those choices, leaves a
--- marker file and starts that new game; the first update on fake_start with
--- a fresh marker starts the lobby.
+-- The world is a new game started from the lobby's own spawn (ps_lobby.spawn:
+-- the actor at the selected place, since 2026-11-16 Cordon's rookie village,
+-- because xrRazom does not host on fake_start) with no faction, so nothing
+-- moves it on. The main menu's "Start the lobby" (persistent_stalkers_lobby_boot
+-- .enter) leaves a marker; the first update with a fresh marker starts the
+-- lobby. While it runs (every update):
+--   - the camera: the place's lineup camera (mod_system_persistent_stalkers.ltx,
+--     relative to the host's slot), forced on the first-person camera with the
+--     character model drawn (show_actor_body 2). On a map with no place, the
+--     engine's free-look camera swung round to the bodies' front (aim);
+--   - the HUD off, the actor held on its slot, the campfires near the row lit;
+--   - the lobby window (persistent_stalkers_lobby_ui): a dialog, as the
+--     inventory, so the player cannot move or open anything else. Change
+--     profile moves this machine's camera to its close-up and hides the other
+--     models here; a row wears that profile (the wardrobe), Done selects it.
+-- Nothing of a character is read, applied or written here, and no game save
+-- is made (the boot refuses them).
+-- In co-op every machine runs its own lobby on the same map: a client asks
+-- the host (pst_lobby_q) and the host's answer (pst_lobby: the host's slot,
+-- the spot order and every player's nameplate) starts it there.
 --
--- In the lobby (every update):
---   the camera is the engine's free-look third-person camera, swung round
---     to the actor's front once at the start (aim(): the custom camera did
---     not take in the third-person modes);
---   the HUD is hidden; the actor is put back on its spot when it drifts;
---     the window below is a dialog, as the inventory: it has the mouse and
---     every key, so the player cannot move or open anything else;
---   the lobby window (UILobby) holds the profile panel in its "lobby" use: a
---     click selects the profile for the next game (profile().choose), and
---     the model puts on that profile's outfit, helmet, backpack and weapons
---     from the wardrobe (made once at the start: see "The look"), weapon
---     held low. Nothing is ever written to a profile from
---     the lobby: persistent_stalkers does not start on fake_start.
---   On the right, the main menu's options (New game, Load game, Last save,
---     Options, MCM, Leave the lobby, Quit), each the main menu's own method,
---     so they open the same dialogs; loading or starting a game leaves.
---
--- Co-op (xrRazom), the riskiest part, off until the host presses "Let
--- players join": xrRazom's host ignores a player who connects while it is on
--- fake_start (xrr_net_server.OnPlayerConnected: it is "pre-game"). The
--- button wraps that function: on fake_start, with the lobby on, the host
--- sends the joiner what it would send on a real level (SendLoadLevel for a
--- known player, SendShowStart for a new one). A client that finds itself on
--- fake_start asks the host (pst_lobby_q); the host's answer (pst_lobby: the
--- row's origin and the order of the players) starts the lobby there. Every
--- machine puts its own actor on its spot; xrRazom's proxies show the others.
+-- Split (2026-11-17): persistent_stalkers_lobby_boot (markers, script skip,
+-- MCM, the new game carry, from the main menu), _join (client join, gear
+-- screen, player markers), _ui (the window), _tune (hand tuning).
 --
 -- Console, with the game started with -dbg:
 --   run_string persistent_stalkers_lobby.status()
---   run_string persistent_stalkers_lobby.enter()        from the main menu
---   run_string persistent_stalkers_lobby.cam(2)         try another camera mode
---   run_string persistent_stalkers_lobby.tune("cam_back", 5)
---   run_string persistent_stalkers_lobby.admit(true)    host: let players join
---   run_string persistent_stalkers_lobby.stop()         camera and input back
+--   run_string persistent_stalkers_lobby.snapshot()        the camera on screen as the lineup camera
+--   run_string persistent_stalkers_lobby.snapshot("close") ... as the close-up
+--   run_string persistent_stalkers_lobby.tune("spacing", 1.3)
+--   run_string persistent_stalkers_lobby.stop()            camera and input back
+--   run_string persistent_stalkers_lobby_tune.where()      hand tuning: see that script
 
-local LEVEL = "fake_start"
-local MARKER = "persistent_stalkers_lobby.txt"
-local MARKER_FOR = 180 -- s a marker counts (the load of the new game)
-local SETTLE = 300 -- ms on fake_start before the lobby starts (1500 until 2026-11-16)
+-- The lobby's levels: fake_start (the lobby from all.spawn, with no
+-- ps_lobby.spawn), l01_escape, and every place's map (lobby_maps).
+local LEVELS = { fake_start = true, l01_escape = true }
+local SETTLE = 300 -- ms on the level before the lobby starts
 local ASK_EVERY = 2000 -- ms between a client's questions, and the host's broadcasts
 local ASK_FOR = 60000 -- ms a client keeps asking
 local REOPEN_AFTER = 100 -- ms before the window, closed by something else, opens again
-local XML_FILE = "ui_persistent_stalkers_lobby.xml"
+local SLOTS = 5
+MAIN = "persistent_stalkers_lobby" -- the config's section
 
--- Sideways offsets of the five spots from the row's origin (m), as the camera
--- sees them: the leftmost first, then to the right (user's request,
--- 2026-11-15). The host takes the first. TUNE.side -1 mirrors them.
-local SPOTS = { -2.2, -1.1, 0, 1.1, 2.2 }
-
--- Changed with tune() while looking at it; the values that work go here.
+-- Defaults. mod_system_persistent_stalkers.ltx replaces these. tune() changes
+-- them for this lobby.
+local glide_ms = 300 -- the lineup camera and the close-up, ms
 TUNE = {
-	cam_back = 4.5, -- m in front of the row
-	cam_up = 1.4, -- m above the row's floor
-	cam_side = 0.3, -- m to the row's right: the row sits between the panel and the options
-	cam_drop = 0.08, -- how far down the camera looks (y of the look direction)
-	-- level.set_active_cam: 0 first person, 1 the third-person camera that
-	-- turns the body with it, 2 free look (the camera orbits, the body stays),
-	-- 3 another. 2: see aim().
+	-- level.set_active_cam for the free-look fallback: 0 first person, 1 the
+	-- third-person camera that turns the body with it, 2 free look (the
+	-- camera orbits, the body stays), 3 another. See aim().
 	cam_mode = 2,
-	-- 1: also level.set_cam_custom_position_direction every update (the
-	-- cam_* values above). In game 2026-11-14 it showed no effect in the
-	-- third-person modes (the view stayed the engine's, behind the actor).
-	custom = 0,
 	drift = 0.25, -- m off its spot before the actor is put back
-	-- radians added to the row's heading for the bodies; turn() adds pi. pi:
-	-- in game 2026-11-15 the bodies faced the camera after one turn().
-	face = math.pi,
-	npcs = 1, -- 1: stand-ins on the spots no player takes; 0: none
-	-- 1: the spots run left to right as the camera sees them (the camera looks
-	-- against the bodies' heading, so the row's left is on screen left); -1
-	-- mirrors them, if the host shows up on the right.
+	face = 0, -- radians added to the bodies' heading (the place's host_rotation); turn() adds pi
+	spacing = 1.1, -- m between slots
+	npcs = 0, -- 1: stand-ins on the empty slots (debug: tune("npcs", 1))
+	-- 1: the slots run to the host's left, the camera's right; -1 mirrors them
 	side = 1,
 }
+local TUNE_KEYS = { "cam_mode", "face", "side", "spacing", "npcs" }
 
--- The stand-ins' sections (G.A.M.M.A.'s plain stalkers), one per spot in turn.
-local NPC_SECTIONS = { "sim_default_stalker_1", "sim_default_stalker_2", "sim_default_stalker_3", "sim_default_stalker_4" }
+-- Loners, one per empty spot, lowest rank next to the host and higher to the
+-- right. The rank numbers are fixed so the random profile roll cannot put
+-- two of them in the same G.A.M.M.A. band (novice, experienced, veteran,
+-- master). The section is that band's outfit.
+local STAND_INS = {
+	{ section = "sim_default_stalker_0", rank = 2000 },
+	{ section = "sim_default_stalker_2", rank = 8000 },
+	{ section = "sim_default_stalker_3", rank = 20000 },
+	{ section = "sim_default_stalker_4", rank = 40000 },
+}
 
 local active = false
-local pending -- { t, origin }: on fake_start, the lobby starts after SETTLE
-local asking -- { t0, next }: a client on fake_start asking the host
-local origin -- { x, y, z, fx, fz, lvid, gvid }: the row's middle, and the way it faces
+local pending -- { t }: the lobby starts after SETTLE
+local asking -- { t0, next }: a client asking the host
+local origin -- { x, y, z, fx, fz, sp, sd, lvid, gvid, place }: the host's slot, the way the bodies face
 local order -- nicknames in spot order (co-op); nil in solo
+local cards = {} -- nick -> { profile, faction, class }, the others' nameplates
 local old_cam -- the camera mode found at the start
-local want_look -- a profile to wear once its wardrobe items are online
 local last_save -- the main menu's "Last save" when the lobby was entered
-local want_weapon -- { slot, until_t, next }: the worn weapon to draw
-local WEAPON_FOR = 4000 -- ms the worn weapon's draw is retried
-local WEAPON_EVERY = 300 -- ms between tries
-local looked -- the profile whose items the actor carries now
 local next_tell = 0
+local next_fire = 0
 local gone_t
-local admitting = false
-local wrapped -- xrRazom's own OnPlayerConnected, while wrapped
+local editing = false -- Change profile: the close-up, the panel on the left
+local edit_from -- the profile selected when the editor opened
 
 GUI = nil
 
--- Formatted here: the game's printf replaces only %s (2026-11-14: "%.1f"
--- came out as it is).
 local function log(fmt, ...)
 	local ok, text = pcall(string.format, fmt, ...)
 	printf("%s", "[PersistentStalkers] lobby: " .. (ok and text or fmt))
 end
 
 local function profile()
-	return rawget(_G, "persistent_stalkers_profile") or persistent_stalkers_profile
+	return persistent_stalkers_profile
 end
 
-local function menu()
-	return rawget(_G, "persistent_stalkers_menu") or persistent_stalkers_menu
+local function place()
+	return persistent_stalkers_place
+end
+
+local function boot()
+	return persistent_stalkers_lobby_boot
+end
+
+local function join()
+	return persistent_stalkers_lobby_join
 end
 
 local function try(what, fn, ...)
@@ -131,550 +121,83 @@ local function try(what, fn, ...)
 	return ok, err
 end
 
-local function on_level()
-	return level.present() and db.actor ~= nil and level.name() == LEVEL
-end
-
 local function in_session()
-	return master_core_net.session() ~= nil
+	return master_core_net.session() == true
 end
 
-local function is_host()
+function is_host()
 	return master_core_net.is_host()
+end
+
+local function is_client()
+	return in_session() and not is_host()
 end
 
 function is_active()
 	return active
 end
 
--------------------------------------------------------------------------------
--- The marker: Lua starts again with the new game.
-
-local function marker_path()
-	return getFS():update_path("$app_data_root$", MARKER)
+function is_editing()
+	return editing
 end
 
--- The newest save, as the main menu's Last save finds it (no extension).
-local function newest_save()
-	local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*.scop")
-	if not flist or flist:Size() == 0 then
-		return nil
-	end
-	flist:Sort(FS.FS_sort_by_modif_down)
-	local file = flist:GetAt(0)
-	return file and (file:NameFull():gsub("%.scop$", "")) or nil
+-- The editor is open: a row wears a profile and does not select it yet.
+function previewing()
+	return editing
 end
 
--- The marker also keeps the newest save at the main menu: in the lobby,
--- Last save is that one. The engine's load_last_save knows only the saves
--- of this session, none in the lobby (2026-11-14: Last save did nothing),
--- and the newest file may be the lobby's own autosave.
--- kp: the lobby switched the loading screen's "press any key" off
--- (keypress_on_start); it is switched back on when the lobby starts, or at
--- the main menu if the lobby never started.
-local function write_marker(kp)
-	local ok, last = pcall(newest_save)
-	return master_core_text.write_file(marker_path(), master_core_text.encode({ t = os.time(), last = ok and last or nil, kp = kp or nil }))
+function get_last_save()
+	return last_save
 end
 
-local restore_kp = false -- this lobby game switched keypress_on_start off
-
-local function keypress_on()
-	local ok, on = pcall(get_console_cmd, 1, "keypress_on_start")
-	return ok and on and true or false
+-- The host's slot while the lobby runs (the table itself: hand tuning moves it).
+function live_origin()
+	return active and origin or nil
 end
 
-local function keypress_back()
-	exec_console_cmd("keypress_on_start 1")
-	log("the loading screen's \"press any key\" is on again")
+-- This game is a lobby, so persistent_stalkers stays idle and writes
+-- nothing: the boot's marker said so, or the lobby is starting or on.
+function lobby_game()
+	return active or pending ~= nil or boot().lobby_load_pending()
 end
 
--- The marker's table once, when fresh; the file is emptied (no os.remove).
-local function take_marker()
-	local text = master_core_text.read_file(marker_path())
-	if not text or text == "" then
-		return nil
-	end
-	master_core_text.write_file(marker_path(), "")
-	local t = master_core_text.decode(text)
-	if type(t) == "table" and type(t.t) == "number" and os.time() - t.t <= MARKER_FOR then
-		return t
-	end
-end
-
--------------------------------------------------------------------------------
--- Every callback isolated in a lobby game (user's request, 2026-11-15)
---
--- The lobby world has none of the Zone's objects, and other mods' callbacks
--- may expect them. axr_main runs a callback's registrants one after another
--- with no pcall: under xrRazom one failing actor_on_first_update skips all
--- the later ones (in game 2026-11-15: lc_custom.script failed, Body Health
--- System's first update never ran and its next actor_on_update crashed the
--- game), and an error in actor_on_update is fatal. In a lobby game every
--- registrant of every callback is wrapped in a pcall at registration, as
--- xrRazom does for actor_on_first_update in a session
--- (xrr_callbacks.script). A failure is logged once per callback and error.
--- Lua starts again with the next game, so a real game is never wrapped.
---
--- Decided when this script is loaded: the marker is written before the new
--- game starts and is used up only on its first update, after every
--- on_game_start has registered its callbacks.
-
-local isolating = false
-local iso_wrap = {}     -- callback name -> { [registrant] = wrapper }
-local iso_seen = {}     -- "name: error" -> times
-local iso_failed = 0    -- failures caught
-
-local function marker_fresh()
-	local text = master_core_text.read_file(marker_path())
-	if not text or text == "" then
-		return false
-	end
-	local t = master_core_text.decode(text)
-	return type(t) == "table" and type(t.t) == "number" and os.time() - t.t <= MARKER_FOR
-end
-
-local function iso_report(name, err)
-	iso_failed = iso_failed + 1
-	local key = name .. ": " .. tostring(err)
-	local n = (iso_seen[key] or 0) + 1
-	iso_seen[key] = n
-	if n == 1 then
-		log("! isolated: %s", key)
-	end
-end
-
--- Time spent in each registrant until the lobby has started (2026-11-16: the
--- game loaded to the first update took 2.9 s): "callback  file:line" -> { ms, n }.
-local cb_time = {}
-local cb_timing = true
-
-local function cb_label(name, reg)
-	local f = type(reg) == "function" and reg or nil
-	if not f then
-		local ok, m = pcall(function() return reg[name] end)
-		f = ok and type(m) == "function" and m or nil
-	end
-	local where = "?"
-	if f and debug and debug.getinfo then
-		local ok, info = pcall(debug.getinfo, f, "S")
-		if ok and info and info.short_src then
-			where = (info.short_src:match("([^\\/]+)%.script") or info.short_src) .. ":" .. tostring(info.linedefined or "?")
-		end
-	end
-	return name .. "  " .. where
-end
-
-local function cb_timed(label, call, ...)
-	if not cb_timing then
-		return call(...)
-	end
-	local t0 = os.clock()
-	local ok, err = call(...)
-	local e = cb_time[label]
-	if not e then
-		e = { ms = 0, n = 0 }
-		cb_time[label] = e
-	end
-	e.ms = e.ms + (os.clock() - t0) * 1000
-	e.n = e.n + 1
-	return ok, err
-end
-
-local function iso_wrapper(name, reg)
-	local by = iso_wrap[name]
-	if not by then
-		by = setmetatable({}, { __mode = "k" })
-		iso_wrap[name] = by
-	end
-	local w = by[reg]
-	if w then
-		return w
-	end
-	local label = cb_label(name, reg)
-	if type(reg) == "function" then
-		w = function(...)
-			local ok, err = cb_timed(label, pcall, reg, ...)
-			if not ok then
-				iso_report(name, err)
-			end
-		end
-	else
-		-- a table or userdata with a method of the callback's name, as
-		-- axr_main.make_callback calls it
-		w = function(...)
-			local f = reg[name]
-			if f then
-				local ok, err = cb_timed(label, pcall, f, reg, ...)
-				if not ok then
-					iso_report(name, err)
-				end
-			end
-		end
-	end
-	by[reg] = w
-	return w
-end
-
--- Logged once, when the lobby starts: the total per callback and the slowest registrants.
-function callback_report(max)
-	cb_timing = false
-	local list, per, total = {}, {}, 0
-	for label, e in pairs(cb_time) do
-		list[#list + 1] = { label = label, ms = e.ms, n = e.n }
-		local cb = label:match("^(%S+)")
-		per[cb] = (per[cb] or 0) + e.ms
-		total = total + e.ms
-	end
-	table.sort(list, function(a, b) return a.ms > b.ms end)
-	local cbs = {}
-	for cb, ms in pairs(per) do
-		cbs[#cbs + 1] = { cb = cb, ms = ms }
-	end
-	table.sort(cbs, function(a, b) return a.ms > b.ms end)
-	log("callbacks until the lobby started: %d ms in %d registrants", math.floor(total + 0.5), #list)
-	for i = 1, math.min(8, #cbs) do
-		log("  %6d ms  %s", math.floor(cbs[i].ms + 0.5), cbs[i].cb)
-	end
-	log("the slowest registrants:")
-	for i = 1, math.min(max or 20, #list) do
-		log("  %6d ms  %4dx  %s", math.floor(list[i].ms + 0.5), list[i].n, list[i].label)
-	end
-end
-
-local function isolate_callbacks()
-	if axr_main and axr_main.__pst_isolated then
-		return false, "already" -- this script loaded again (persistent_stalkers_dev.reload)
-	end
-	if not (axr_main and axr_main.callback_set and axr_main.callback_unset) then
-		return false
-	end
-	axr_main.__pst_isolated = true
-	local orig_set, orig_unset = axr_main.callback_set, axr_main.callback_unset
-	axr_main.callback_set = function(name, reg)
-		if reg ~= nil then
-			reg = iso_wrapper(name, reg)
-		end
-		return orig_set(name, reg)
-	end
-	axr_main.callback_unset = function(name, reg)
-		local by = iso_wrap[name]
-		return orig_unset(name, by and reg ~= nil and by[reg] or reg)
-	end
-	isolating = true
-	return true
-end
-
-function isolation()
-	return isolating, iso_failed
-end
-
--- Our axr_main.script (built by tools/build_axr_main.js) asks this once, when a
--- game starts and before any script is started: in a lobby game the scripts
--- it must not load or start (persistent_stalkers_skip.names, every script an
--- enabled mod ships that is not Anomaly's own, loose in gamedata or one the
--- lobby needs), else nil: every script, as always.
-local skipping = 0
-local blocked = {}      -- skipped script -> { n = times asked, by = { [caller] = true } }
-local blocking = false
-
--- MCM's options are not gathered from skipped mods (in game 2026-11-15:
--- tasks_fetch asked MCM for one ZCP setting at load, and MCM's first get,
--- ui_mcm.gather_options, loaded every *mcm script and through them their mods,
--- 3.1 s). Only while gather_options runs, _G's __index (the engine's loader,
--- which the modded exes already chain in _g_patches.script) answers nil for a
--- skipped script, so MCM does not list it. Everywhere else a skipped script
--- still loads when a kept one names it: blocking it always crashed the game
--- (in game 2026-11-16: G.A.M.M.A.'s sim_board calls ZCP's smr_civil_war with no
--- nil check, from se_actor, outside any pcall). A skipped mod's setting then
--- reads as MCM's "bad path" (nil). Each ask is counted with the file that asked.
-local gathering = false
-local function caller()
-	if not (debug and debug.getinfo) then
-		return nil
-	end
-	for level = 3, 12 do
-		local info = debug.getinfo(level, "S")
-		if not info then
-			return nil
-		end
-		local src = info.short_src
-		if src and src ~= "[C]" and not src:find("persistent_stalkers_lobby", 1, true) then
-			return src:match("([^\\/]+)%.script") or src
-		end
-	end
-end
-
-local function wrap_gather(m)
-	if type(m) ~= "table" or type(m.gather_options) ~= "function" or m.__pst_gather then
-		return
-	end
-	local orig = m.gather_options
-	m.__pst_gather = true
-	m.gather_options = function(...)
-		gathering = true
-		local ok, a, b = pcall(orig, ...)
-		gathering = false
-		if not ok then
-			error(a, 0)
-		end
-		return a, b
-	end
-end
-
--- Every MCM value, as the main menu's MCM (which has gathered every page) gives
--- it, written by enter() and read in the lobby game: a skipped mod's page is not
--- gathered there, and its own scripts still ask for its settings and do
--- arithmetic with them (in game 2026-11-16: visual_memory_manager, Stealth
--- Overhaul, crashed on stealth_mcm.get_config("memory") = nil, from the engine).
-local MCM_CACHE = "persistent_stalkers_lobby_mcm.txt"
-local mcm_cache = nil
-local mcm_cached = 0  -- lookups answered from it
-
-local function mcm_cache_path()
-	return getFS():update_path("$app_data_root$", MCM_CACHE)
-end
-
-local function mcm_walk(node, prefix, out, get)
-	if type(node) ~= "table" then
-		return
-	end
-	local path = node.id and (prefix and (prefix .. "/" .. node.id) or tostring(node.id)) or prefix
-	if type(node.gr) == "table" then
-		for _, child in ipairs(node.gr) do
-			mcm_walk(child, path, out, get)
-		end
-	elseif node.type and node.val ~= nil and path then
-		local ok, v = pcall(get, path)
-		local t = type(v)
-		if ok and (t == "boolean" or t == "number" or t == "string") then
-			out[path] = v
-		end
-	end
-end
-
--- From the main menu's Lua, before a lobby game: nothing if MCM has not gathered.
--- Merged over the file, never replacing it: the main menu reached by leaving a
--- lobby keeps the lobby game's Lua, whose MCM gathered only the kept mods' pages
--- (in game 2026-11-16: 167 values instead of 2527, and the next lobby crashed on
--- death_manager's dph_loot_cond setting = nil). Returns the values read now.
-function mcm_snapshot()
-	if not (ui_mcm and type(ui_mcm.options) == "table" and #ui_mcm.options > 0 and ui_mcm.get) then
-		return 0
-	end
-	local out, n = {}, 0
-	for _, top in ipairs(ui_mcm.options) do
-		mcm_walk(top, nil, out, ui_mcm.get)
-	end
-	local text = master_core_text.read_file(mcm_cache_path())
-	local all = text and text ~= "" and master_core_text.decode(text)
-	all = type(all) == "table" and all or {}
-	for k, v in pairs(out) do
-		all[k] = v
-		n = n + 1
-	end
-	master_core_text.write_file(mcm_cache_path(), master_core_text.encode(all))
-	mcm_cache = nil
-	return n
-end
-
-local function mcm_cache_load()
-	if mcm_cache then
-		return mcm_cache
-	end
-	local text = master_core_text.read_file(mcm_cache_path())
-	local t = text and text ~= "" and master_core_text.decode(text)
-	mcm_cache = type(t) == "table" and t or {}
-	return mcm_cache
-end
-
--- ui_mcm.get in a lobby game: MCM's own answer, else the main menu's.
-local function wrap_get(m)
-	if type(m) ~= "table" or type(m.get) ~= "function" or m.__pst_get then
-		return
-	end
-	local orig = m.get
-	m.__pst_get = true
-	-- a path MCM did not know once is answered from the snapshot from then on,
-	-- without asking MCM again (each ask logs "!MCM given bad path": in game
-	-- 2026-11-16, Stealth asked 7 paths per NPC per frame)
-	local unknown = {}
-	m.get = function(id, ...)
-		if type(id) == "string" and unknown[id] then
-			mcm_cached = mcm_cached + 1
-			return mcm_cache_load()[id]
-		end
-		local v = orig(id, ...)
-		if v == nil and type(id) == "string" then
-			unknown[id] = true
-			local c = mcm_cache_load()[id]
-			if c ~= nil then
-				mcm_cached = mcm_cached + 1
-				return c
-			end
-		end
-		return v
-	end
-end
-
-local function block_skipped(names)
-	local mt = getmetatable(_G) or {}
-	local old = mt.__index
-	mt.__index = function(t, key)
-		if gathering and type(key) == "string" and names[string.lower(key) .. ".script"] then
-			local b = blocked[key]
-			if not b then
-				b = { n = 0, by = {} }
-				blocked[key] = b
-			end
-			b.n = b.n + 1
-			local ok, by = pcall(caller)
-			if ok and by then
-				b.by[by] = true
-			end
-			return nil
-		end
-		local v
-		if type(old) == "function" then
-			v = old(t, key)
-		elseif type(old) == "table" then
-			v = old[key]
-		else
-			v = rawget(t, key)
-		end
-		if key == "ui_mcm" then
-			pcall(wrap_gather, v)
-			pcall(wrap_get, v)
-		end
-		return v
-	end
-	setmetatable(_G, mt)
-	-- ui_mcm already loaded (it is, when MCM's own scripts ran first)
-	pcall(wrap_gather, rawget(_G, "ui_mcm"))
-	pcall(wrap_get, rawget(_G, "ui_mcm"))
-	blocking = true
-end
-
--- The lobby's load, step by step, in seconds of the process (os.clock):
--- comparable between the main menu's Lua and the game's.
-local function mark(what)
-	local ok, t = pcall(os.clock)
-	if ok and t then
-		log("timeline %.2f s: %s", t, what)
-	end
-end
-
--- Every load, the lobby's or not, starts with one of these console commands
--- (the main menu: "start server(<save or spawn>/...)"; in a game: "load <save>"):
--- timed, so a regular load can be put beside the lobby's (user's request,
--- 2026-11-16). The engine's own exec_console_cmd is called as it was.
-local function time_loads()
-	local orig = rawget(_G, "exec_console_cmd")
-	if type(orig) ~= "function" or rawget(_G, "__pst_timed_cmd") then
-		return
-	end
-	rawset(_G, "__pst_timed_cmd", true)
-	_G.exec_console_cmd = function(cmd, ...)
-		if type(cmd) == "string" and (cmd:find("^start server") or cmd:find("^load ")) then
-			mark("a load starts: " .. cmd)
-		end
-		return orig(cmd, ...)
-	end
-end
-pcall(time_loads)
-
+-- Our axr_main.script asks these of this script (tools/build_axr_main.js).
 function startup_skip()
-	mark("the scripts start")
-	local ok, fresh = pcall(marker_fresh)
-	if not (ok and fresh) then
-		return nil
-	end
-	local ok2, names = pcall(function() return persistent_stalkers_skip.names end)
-	if not (ok2 and type(names) == "table") then
-		log("! a lobby game, but no skip list (tools/build_axr_main.js): every script starts")
-		return nil
-	end
-	skipping = 0
-	for _ in pairs(names) do
-		skipping = skipping + 1
-	end
-	log("a lobby game: %d mod scripts are not started", skipping)
-	local okb, err = pcall(block_skipped, names)
-	if not okb then
-		log("! the skipped scripts could not be blocked from loading: %s", tostring(err))
-	end
-	return names
+	return boot().startup_skip()
 end
-
-local function blocked_report(max)
-	local list = {}
-	for k, b in pairs(blocked) do
-		local by = {}
-		for c in pairs(b.by) do
-			by[#by + 1] = c
-		end
-		table.sort(by)
-		list[#list + 1] = { k, b.n, table.concat(by, ", ") }
-	end
-	table.sort(list, function(a, b) return a[2] > b[2] or (a[2] == b[2] and a[1] < b[1]) end)
-	log("skipped scripts asked for and not loaded: %d", #list)
-	for i = 1, math.min(max, #list) do
-		log("  %3dx %s  (by %s)", list[i][2], list[i][1], list[i][3] ~= "" and list[i][3] or "?")
-	end
-end
-
--- Our axr_main.script, in a lobby game, times each script while it starts
--- (os.clock, seconds): load, its file run when it is first named (with every
--- script it names in turn), and start, its on_game_start (with the same).
--- The slowest are logged, to see what the lobby's load still spends.
-local REPORT_TOP = 20
 
 function startup_report(load, start)
-	local function total(t)
-		local s = 0
-		for _, v in pairs(t) do
-			s = s + v
-		end
-		return s
-	end
-	local function top(t, what)
-		local list = {}
-		for k, v in pairs(t) do
-			list[#list + 1] = { k, v }
-		end
-		table.sort(list, function(a, b) return a[2] > b[2] end)
-		log("startup, %s: %d scripts, %.0f ms; the slowest:", what, #list, total(t) * 1000)
-		for i = 1, math.min(REPORT_TOP, #list) do
-			log("  %6.0f ms  %s", list[i][2] * 1000, list[i][1])
-		end
-	end
-	top(load or {}, "load (the file, and every script it names)")
-	top(start or {}, "on_game_start (and every script it names)")
-	if blocking then
-		blocked_report(REPORT_TOP)
-	end
-	mark("the scripts have started")
-end
-
-do
-	local ok, fresh = pcall(marker_fresh)
-	if ok and fresh then
-		local ok2, on, why = pcall(isolate_callbacks)
-		if ok2 and on then
-			log("a lobby game: every callback is isolated (an error is logged, not fatal)")
-		elseif ok2 and why == "already" then
-			log("a lobby game: callbacks already isolated")
-		else
-			log("! a lobby game, but the callbacks could not be isolated")
-		end
-	end
+	return boot().startup_report(load, start)
 end
 
 -------------------------------------------------------------------------------
--- The row and the camera
+-- The place, the slots and the camera
+
+-- The lobby's config, one file shipped with the mod (persistent_stalkers_place:
+-- mod_system_persistent_stalkers.ltx). [persistent_stalkers_lobby] is the
+-- spacing and the selected place; each [ps_lobby_place_<name>] is a map, the
+-- host's position and rotation, and the cameras relative to them.
+local cams -- the place for this map; false: none; nil: not read yet
+local place_maps -- the config's places' maps (lobby levels)
+
+local function lobby_maps()
+	if place_maps == nil then
+		local ok, all = pcall(function() return place().read() end)
+		place_maps = ok and all and place().maps(all) or {}
+	end
+	return place_maps
+end
+
+local function on_level()
+	if not (level.present() and db.actor ~= nil) then
+		return false
+	end
+	local n = level.name()
+	return LEVELS[n] == true or lobby_maps()[n] == true
+end
 
 -- This machine's spot: its place in the host's order, the first in solo.
-local function my_spot()
+function my_spot()
 	if order then
 		local me = master_core_net.nick()
 		for i, n in ipairs(order) do
@@ -686,48 +209,319 @@ local function my_spot()
 	return 1
 end
 
--- The row runs to the right of the way it faces: right = (fz, 0, -fx).
+-- Slot i is (i - 1) spacings to the host's left; the bodies' right is (fz, 0, -fx).
 local function spot_pos(i)
-	local off = SPOTS[((i - 1) % #SPOTS) + 1] * (TUNE.side == -1 and -1 or 1)
+	local k = (i - 1) % SLOTS
+	local off = -k * (origin.sp or TUNE.spacing) * ((origin.sd or TUNE.side) == -1 and -1 or 1)
 	return origin.x + origin.fz * off, origin.y, origin.z - origin.fx * off
 end
 
-local function hold_camera()
-	if TUNE.custom ~= 1 then
-		return
+local function ltx_num(sec, key)
+	local n = sec and tonumber(sec[key])
+	if n ~= n then
+		return nil
 	end
-	local cx = origin.x + origin.fx * TUNE.cam_back + origin.fz * TUNE.cam_side
-	local cz = origin.z + origin.fz * TUNE.cam_back - origin.fx * TUNE.cam_side
-	local pos = vector():set(cx, origin.y + TUNE.cam_up, cz)
-	local look = vector():set(-origin.fx, -TUNE.cam_drop, -origin.fz)
-	level.set_cam_custom_position_direction(pos, vector():set(look:getH(), look:getP(), 0), 1, true, false)
+	return n
 end
 
--- The heading the bodies face: the row's, plus TUNE.face.
+-- The place for this map (persistent_stalkers_place.for_map), or nil.
+function load_cams()
+	if cams ~= nil then
+		return cams or nil
+	end
+	cams = false
+	local ok, all = pcall(function() return place().read() end)
+	if not ok or not all then
+		if not ok then
+			log("! the lobby config could not be read: %s", tostring(all))
+		end
+		return nil
+	end
+	local sec = all[MAIN]
+	if not sec then
+		log("! the camera config could not be read")
+		return nil
+	end
+	for _, k in ipairs(TUNE_KEYS) do
+		TUNE[k] = ltx_num(sec, k) or TUNE[k]
+	end
+	local g = ltx_num(sec, "glide")
+	if g and g > 0 then
+		glide_ms = g * 1000
+	end
+	local here = level.present() and level.name() or nil
+	local pl = here and place().for_map(all, here)
+	if not pl then
+		log("no place for %s in the config: the host where the actor stands, free look (persistent_stalkers_place.add(\"name\") makes one)",
+			tostring(here))
+		return nil
+	end
+	cams = pl
+	log("place %s on %s: host at %.2f, %.2f, %.2f, rotation %s, camera %s, close-up %s", pl.name, pl.map, pl.x, pl.y, pl.z,
+		place().fmt(pl.rot), pl.camera and place().list(pl.camera) or "none", pl.close and place().list(pl.close) or "none")
+	return cams
+end
+
+-- Slot i's frame: its position, facing the way the bodies face.
+local function slot_frame(i)
+	local x, y, z = spot_pos(i)
+	return place().frame(x, y, z, place().yaw_of(origin.fx, origin.fz))
+end
+
+-- Slot i's close-up pose in the place (its own close_<i>, else the shared one).
+function close_pose(pl, i)
+	return pl and (pl.close_n[i] or pl.close) or nil
+end
+
+-- The close-up of a slot (1..5) in the world, or nil.
+function close_for(spot)
+	local pl = load_cams()
+	local i = tonumber(spot) or 1
+	local c = close_pose(pl, i)
+	if not c or not origin then
+		return nil
+	end
+	return place().pose_world(slot_frame(i), c)
+end
+
+-- The pose to force: this machine's close-up while a profile is being
+-- changed, otherwise the lineup camera. Nil: free look.
+local function camera_shot()
+	local pl = load_cams()
+	if not pl or not origin then
+		return nil
+	end
+	if editing then
+		local s = close_for(my_spot())
+		if s then
+			return s
+		end
+	end
+	return pl.camera and place().pose_world(slot_frame(1), pl.camera) or nil
+end
+
+-- True while Change profile is showing a recorded close-up.
+local function close_view()
+	return editing and origin ~= nil and close_for(my_spot()) ~= nil
+end
+
+-- The camera on screen: position and direction, or nil.
+function device_view()
+	local ok, d = pcall(device)
+	local pos, dir = ok and d and d.cam_pos, ok and d and d.cam_dir
+	if not pos or not dir or type(pos.x) ~= "number" or type(dir.x) ~= "number" then
+		return nil
+	end
+	return pos, dir
+end
+
+local function device_pose()
+	local pos, dir = device_view()
+	if not pos then
+		return nil
+	end
+	local ok, h = pcall(function() return dir:getH() end)
+	local ok2, p = pcall(function() return dir:getP() end)
+	if not (ok and ok2 and type(h) == "number" and type(p) == "number") then
+		return nil
+	end
+	return { x = pos.x, y = pos.y, z = pos.z, h = h, p = p }
+end
+
+-- which nil or "wide": the lineup camera, relative to the host's slot.
+-- "close" (or 1): the close-up, relative to this machine's slot, for every
+-- slot; with slot n, that slot's own (close_n). Written into the place's
+-- section; comments and other keys stay.
+local function record_camera(which, slot)
+	local close = which == "close" or which == 1 or which == "1"
+	if which ~= nil and which ~= "wide" and not close then
+		log("! snapshot: nothing for the lineup camera, or \"close\" for the close-up")
+		return
+	end
+	if not (active and origin) then
+		log("! a camera is recorded in the lobby: it is relative to the slots")
+		return
+	end
+	local pl = load_cams()
+	if not pl then
+		log("! no place for %s in the config: persistent_stalkers_place.add(\"name\") first", level.name())
+		return
+	end
+	local pos, dir = device_view()
+	if not pos then
+		log("! no camera to record")
+		return
+	end
+	local i = close and (tonumber(slot) or my_spot()) or 1
+	local pose = place().pose_local(slot_frame(i), pos, dir)
+	local key = not close and "camera" or (slot and ("close_" .. i)) or "close"
+	if not place().write({ { "ps_lobby_place_" .. pl.name, key, place().list(pose) } }) then
+		log("! the lobby config could not be written")
+		return
+	end
+	if key == "camera" then
+		pl.camera = pose
+	elseif key == "close" then
+		pl.close = pose
+	else
+		pl.close_n[i] = pose
+	end
+	log("%s recorded in place %s, from slot %s: %s (right, up, forward, yaw, pitch)", key, pl.name, i, place().list(pose))
+end
+
+-- The forced pose is the engine's first-person camera moved there, so on its
+-- own only the hands are drawn. show_actor_body 2 draws the world model and
+-- the weapon while that camera stays put (modded exes). hud_draw is the whole
+-- HUD (G.A.M.M.A.'s bars are not the engine indicators hide_indicators_safe
+-- covers). The values found are put back when the lobby stops; while it runs,
+-- an update that finds the HUD on again turns it off.
+local kept_body -- show_actor_body found
+local kept_hud -- hud_draw found (0, 1)
+
+local function show_body()
+	if kept_body ~= nil then
+		return
+	end
+	local ok, v = pcall(get_console_cmd, 1, "show_actor_body")
+	kept_body = (ok and tonumber(v)) or 0
+	pcall(exec_console_cmd, "show_actor_body 2")
+end
+
+local function hide_body()
+	if kept_body == nil then
+		return
+	end
+	pcall(exec_console_cmd, "show_actor_body " .. tostring(kept_body))
+	kept_body = nil
+end
+
+-- true, false, or nil when the console will not say.
+local function hud_now()
+	local ok, v = pcall(get_console_cmd, 1, "hud_draw")
+	if not ok or v == nil then
+		return nil
+	end
+	return v == true or v == 1
+end
+
+local function hud_off()
+	if kept_hud == nil then
+		kept_hud = hud_now() == false and 0 or 1
+		log("HUD off (hud_draw was %s)", tostring(kept_hud))
+		pcall(exec_console_cmd, "hud_draw 0")
+	elseif hud_now() == true then
+		pcall(exec_console_cmd, "hud_draw 0")
+	end
+	pcall(level.hide_indicators_safe)
+	if type(show_indicators) == "function" then
+		pcall(show_indicators, false)
+	end
+end
+
+local function hud_on()
+	if kept_hud == nil then
+		return
+	end
+	local v = kept_hud
+	kept_hud = nil
+	pcall(exec_console_cmd, "hud_draw " .. tostring(v))
+	if v == 1 then
+		if type(show_indicators) == "function" then
+			pcall(show_indicators, true)
+		else
+			pcall(level.show_indicators)
+		end
+	end
+	log("HUD back (hud_draw %s)", tostring(v))
+end
+
+-- Angles into -pi..pi.
 local function wrap(h)
-	h = h % (2 * math.pi) -- into -pi..pi
+	h = h % (2 * math.pi)
 	return h > math.pi and h - 2 * math.pi or h
 end
 
+-- The heading the bodies face: the row's, plus TUNE.face.
 local function body_heading()
 	return wrap(vector():set(origin.fx, 0, origin.fz):getH() + TUNE.face)
 end
 
--- The camera in front of the actor (2026-11-14, second try). The custom
--- camera showed nothing in the third-person modes, and in mode 1 the body
--- turns with the camera, so it always shows its back; the first version's
--- set_actor_direction(±0) could not change that (turn() did nothing). Free
--- look (mode 2) orbits the camera without turning the body. So: in mode 1
--- turn camera and body to face away from the row's front (heading + pi),
--- switch to free look, then turn to the row's heading. Whichever of the two
--- set_actor_direction turns in free look (the body or the camera), the
--- camera ends looking at the body's front. Spread over updates
--- (AIM_STEP apart) so each camera switch has landed. set_actor_direction
--- takes minus the heading, as Anomaly's own scripts call it.
+-- The lineup camera and the close-up: a straight blend over glide_ms from the
+-- pose on screen; the first pose of a lobby is put on at once.
+local glide -- { from, to, t0 }
+local glide_close = false
+local applied -- the pose last settled on
+
+local function copy_pose(s)
+	return { x = s.x, y = s.y, z = s.z, h = s.h, p = s.p }
+end
+
+local function mix_pose(a, b, k)
+	return {
+		x = a.x + (b.x - a.x) * k, y = a.y + (b.y - a.y) * k, z = a.z + (b.z - a.z) * k,
+		h = a.h + wrap(b.h - a.h) * k, p = a.p + wrap(b.p - a.p) * k,
+	}
+end
+
+local function put_cam(s)
+	-- In game (2026-11-14) the custom camera did nothing while free look or
+	-- the other third-person modes were active: first person, and
+	-- show_body() draws the character. Smoothing 1: this call is the pose for
+	-- this frame (mix_pose is the movement). hudDraw false: no hands.
+	local mode
+	pcall(function() mode = level.get_active_cam() end)
+	if mode ~= 0 then
+		level.set_active_cam(0)
+	end
+	level.set_cam_custom_position_direction(vector():set(s.x, s.y, s.z), vector():set(s.h, s.p, 0), 1, false, false)
+	show_body()
+end
+
+local function force_pose(s)
+	local close = close_view()
+	if applied and close ~= glide_close then
+		glide_close = close
+		glide = { from = copy_pose(device_pose() or applied), to = copy_pose(s), t0 = time_global() }
+		log("camera over %.1f s", glide_ms / 1000)
+	elseif not applied then
+		glide_close = close
+	end
+	local pose = s
+	if glide then
+		local k = (time_global() - glide.t0) / glide_ms
+		if k >= 1 then
+			glide = nil
+		else
+			pose = mix_pose(glide.from, glide.to, math.max(0, k))
+		end
+	end
+	put_cam(pose)
+	if not glide then
+		applied = copy_pose(s)
+	end
+end
+
+-- The place's camera, when there is one; else free look stays (aim).
+function hold_camera()
+	local s = camera_shot()
+	if s then
+		force_pose(s)
+	end
+end
+
+-- The bodies turned to the camera (2026-11-14). In mode 1 the body turns
+-- with the camera, so it always shows its back; free look (mode 2) orbits
+-- the camera without turning the body. So: in mode 1 turn camera and body
+-- away from the row's front (heading + pi), switch to free look, then turn
+-- to the row's heading; whichever of the two set_actor_direction turns in
+-- free look, the camera ends looking at the body's front. With a place's
+-- camera there is no switch, only the turns. AIM_STEP apart, so each camera
+-- switch has landed. set_actor_direction takes minus the heading, as
+-- Anomaly's own scripts call it.
 local AIM_STEP = 150 -- ms
 local aiming -- { step, at }
 
-local function aim()
+function aim()
 	aiming = { step = 1, at = 0 }
 end
 
@@ -736,14 +530,23 @@ local function hold_aim(now)
 		return
 	end
 	local h = body_heading()
+	local forced = camera_shot() ~= nil
 	if aiming.step == 1 then
-		level.set_active_cam(1)
+		if not forced then
+			level.set_active_cam(1)
+		end
 		db.actor:set_actor_direction(-wrap(h + math.pi))
 	elseif aiming.step == 2 then
-		level.set_active_cam(TUNE.cam_mode)
+		if not forced then
+			level.set_active_cam(TUNE.cam_mode)
+		end
 	else
 		db.actor:set_actor_direction(-h)
-		log("aimed: camera mode %s, bodies at heading %.2f", TUNE.cam_mode, h)
+		if forced then
+			log("aimed: camera from the config, bodies at heading %.2f", h)
+		else
+			log("aimed: camera mode %s, bodies at heading %.2f", TUNE.cam_mode, h)
+		end
 		aiming = nil
 		return
 	end
@@ -761,40 +564,75 @@ local function hold_actor()
 	end
 end
 
+-- The host's slot and the way the bodies face: the config's place for this
+-- map, else the actor where it stands, the bodies facing back the way it
+-- looks (where the free-look camera ends up).
+local function origin_here()
+	local lvid, gvid = db.actor:level_vertex_id(), db.actor:game_vertex_id()
+	local pl = load_cams()
+	if pl then
+		local fx, fz = place().facing(pl.rot)
+		local ok, lv = pcall(level.vertex_id, vector():set(pl.x, pl.y, pl.z))
+		if ok and type(lv) == "number" and lv < 4294967295 then
+			lvid = lv
+		end
+		return { x = pl.x, y = pl.y, z = pl.z, fx = fx, fz = fz, sp = TUNE.spacing, sd = TUNE.side,
+			lvid = lvid, gvid = gvid, place = pl.name }
+	end
+	local p, d = db.actor:position(), db.actor:direction()
+	local fx, fz = -d.x, -d.z
+	local len = math.sqrt(fx * fx + fz * fz)
+	if len < 0.001 then
+		fx, fz, len = 0, -1, 1
+	end
+	return { x = p.x, y = p.y, z = p.z, fx = fx / len, fz = fz / len, sp = TUNE.spacing, sd = TUNE.side,
+		lvid = lvid, gvid = gvid }
+end
+
 -------------------------------------------------------------------------------
--- Stand-ins: NPCs on the spots no player takes (user's request, 2026-11-14),
--- made by the host (or in solo), held on their spots and turned to the
--- camera. Their own AI may still turn or animate them: they are plain
--- stalkers. Released when the lobby stops; a spot a joining player takes
--- loses its stand-in.
+-- Stand-ins: NPCs on the spots no player takes (user's request, 2026-11-14;
+-- off unless tune("npcs", 1)), made by the host (or in solo), held on their
+-- spots and turned to the camera. Their own AI may still turn or animate
+-- them. Released when the lobby stops; a spot a joining player takes loses
+-- its stand-in.
 
 local npcs = {} -- spot -> id
+local npc_spec = {} -- id -> the STAND_INS entry
+local npc_set = {} -- id -> faction and rank already applied
 
-local function players_now()
-	return order and #order or 1
+local function forget_npcs(release)
+	if release then
+		for _, id in pairs(npcs) do
+			pcall(alife_release_id, id)
+		end
+	end
+	npcs, npc_spec, npc_set = {}, {}, {}
 end
 
 local function fill_spots()
-	if TUNE.npcs ~= 1 or (in_session() and not is_host()) then
+	if TUNE.npcs ~= 1 or is_client() then
 		return
 	end
-	local taken = players_now()
+	local taken = order and #order or 1
 	for spot, id in pairs(npcs) do
-		if spot <= taken or spot > #SPOTS then
+		if spot <= taken or spot > SLOTS then
 			pcall(alife_release_id, id)
 			npcs[spot] = nil
+			npc_spec[id] = nil
+			npc_set[id] = nil
 		end
 	end
-	for spot = taken + 1, #SPOTS do
+	for spot = taken + 1, SLOTS do
 		if not npcs[spot] then
 			local x, y, z = spot_pos(spot)
-			local section = NPC_SECTIONS[((spot - 2) % #NPC_SECTIONS) + 1]
-			local ok, se = pcall(alife_create, section, vector():set(x, y, z), origin.lvid, origin.gvid)
+			local spec = STAND_INS[spot - taken]
+			local ok, se = pcall(alife_create, spec.section, vector():set(x, y, z), origin.lvid, origin.gvid)
 			if ok and se then
 				npcs[spot] = se.id
-				log("a stand-in on spot %s: %s (%s)", spot, section, se.id)
+				npc_spec[se.id] = spec
+				log("a stand-in on spot %s: %s, rank %s (%s)", spot, spec.section, spec.rank, se.id)
 			else
-				log("! the stand-in for spot %s could not be made (%s): %s", spot, section, tostring(se))
+				log("! the stand-in for spot %s could not be made (%s): %s", spot, spec.section, tostring(se))
 			end
 		end
 	end
@@ -802,7 +640,6 @@ end
 
 local function hold_npcs()
 	-- not "look": that is the engine's sight enum (look.direction)
-	-- the bodies' heading (the row's, turned by TUNE.face)
 	local dir = vector():setHP(body_heading(), 0)
 	for spot, id in pairs(npcs) do
 		local obj = level.object_by_id(id)
@@ -814,27 +651,189 @@ local function hold_npcs()
 				pcall(function() obj:set_npc_position(vector():set(x, y, z)) end)
 			end
 			pcall(function() obj:set_sight(look.direction, dir) end)
+			local spec = not npc_set[id] and npc_spec[id]
+			if spec then
+				npc_set[id] = true
+				local ok_c = pcall(function() obj:set_character_community("stalker", 0, 0) end)
+				local ok_r = pcall(function() obj:set_character_rank(spec.rank) end)
+				if not ok_c or not ok_r then
+					log("! stand-in %s: loner rank %s was not set", id, spec.rank)
+				end
+			end
 		end
 	end
 end
 
-local function release_npcs()
-	for spot, id in pairs(npcs) do
-		pcall(alife_release_id, id)
+-------------------------------------------------------------------------------
+-- The close-up hides every other model on this machine (not a message: each
+-- machine hides the others on its own screen). The engine's call is
+-- set_visual_name: the invisible stalker, the mesh the actor uses so the body
+-- is not drawn; the visual that was there is put back afterwards. Hiding the
+-- bones alone left the stand-ins drawn (2026-11-16); they are hidden as well,
+-- once, and again by the object's own update only if the visual did not take.
+
+local INVISIBLE = "actors\\stalker_invisible\\stalker_invisible"
+local CONCEAL_EVERY = 500 -- ms between looks for models that came since
+local concealed = {} -- id -> true
+local saved_visual = {} -- id -> the model to put back (false: none known)
+local ticks = {} -- id -> { obj, on }: the object's own update
+local conceal_logged = false
+local visual_err = false
+local next_conceal = 0
+
+local function is_me(obj)
+	local a = db.actor
+	if not obj or not a then
+		return false
 	end
-	npcs = {}
+	-- by id only: game_object has no __eq, and comparing two of them with ==
+	-- is a fatal script error even inside a pcall (in game 2026-11-16)
+	local ok, id = pcall(function() return obj:id() end)
+	local oka, mine = pcall(function() return a:id() end)
+	return ok and oka and id == mine
 end
 
--- The row's origin from where the actor stands and looks now.
-local function origin_here()
-	local p, d = db.actor:position(), db.actor:direction()
-	local fx, fz = d.x, d.z
-	local len = math.sqrt(fx * fx + fz * fz)
-	if len < 0.001 then
-		fx, fz, len = 0, 1, 1
+local function set_bones(obj, show)
+	local function one(name)
+		pcall(function() obj:set_bone_visible(name, show, true) end)
+		pcall(function() obj:set_bone_visible(name, show, true, false) end)
 	end
-	return { x = p.x, y = p.y, z = p.z, fx = fx / len, fz = fz / len,
-		lvid = db.actor:level_vertex_id(), gvid = db.actor:game_vertex_id() }
+	one("bip01")
+	one("root_stalker")
+	pcall(function()
+		local bones = obj:list_bones()
+		if type(bones) == "table" then
+			for _, name in pairs(bones) do
+				one(name)
+			end
+		end
+	end)
+end
+
+local function visual_name(obj)
+	local ok, name = pcall(function() return obj:get_visual_name() end)
+	if ok and type(name) == "string" and name ~= "" then
+		return name
+	end
+	return nil
+end
+
+local function make_invisible(obj)
+	if visual_name(obj) == INVISIBLE then
+		return true
+	end
+	local ok, err = pcall(function() obj:set_visual_name(INVISIBLE) end)
+	if not ok and not visual_err then
+		visual_err = true
+		log("! close-up: set_visual_name failed: %s", tostring(err))
+	end
+	return false
+end
+
+-- On the stalker's own update, after its animation, so a refresh in the same
+-- frame cannot draw it again. Returning false drops the call.
+local function hide_tick(st)
+	if type(st) ~= "table" or not st.on then
+		return false
+	end
+	if st.obj and not make_invisible(st.obj) then
+		set_bones(st.obj, false)
+	end
+	return true
+end
+
+local function conceal_obj(obj)
+	if is_me(obj) then
+		return
+	end
+	local ok, id = pcall(function() return obj:id() end)
+	if not ok then
+		return
+	end
+	if saved_visual[id] == nil then
+		saved_visual[id] = visual_name(obj) or false
+	end
+	set_bones(obj, false)
+	make_invisible(obj)
+	local st = ticks[id]
+	if not st then
+		st = {}
+		ticks[id] = st
+		pcall(function() obj:set_fastcall(hide_tick, st) end)
+	end
+	st.obj, st.on = obj, true
+	concealed[id] = true
+end
+
+local function conceal_others()
+	if not close_view() then
+		return
+	end
+	next_conceal = time_global() + CONCEAL_EVERY
+	for _, id in pairs(npcs) do
+		local obj = level.object_by_id(id)
+		if obj then
+			conceal_obj(obj)
+		end
+	end
+	-- other players, as this machine draws them (xrRazom's local avatar)
+	if XrrPlayers then
+		pcall(function()
+			local players = XrrPlayers()
+			for i = 1, players:GetPeerCount() do
+				local obj = level.object_by_id(players:GetPeerLocalIdAt(i))
+				if obj and obj:section() == "xrr_avatar" then
+					conceal_obj(obj)
+				end
+			end
+		end)
+	end
+	-- a stand-in the host made, seen here as an ordinary stalker
+	if level.iterate_nearest then
+		local mine = my_spot()
+		for i = 1, SLOTS do
+			if i ~= mine then
+				local x, y, z = spot_pos(i)
+				pcall(level.iterate_nearest, vector():set(x, y, z), 0.8, function(obj)
+					local sec
+					pcall(function() sec = obj:section() end)
+					if sec == "xrr_avatar" or (type(sec) == "string" and sec:find("sim_default_stalker", 1, true) == 1) then
+						conceal_obj(obj)
+					end
+					return false
+				end)
+			end
+		end
+	end
+	if not conceal_logged and next(concealed) then
+		conceal_logged = true
+		local n = 0
+		for _ in pairs(concealed) do n = n + 1 end
+		log("close-up: hid %s other model%s on this machine", n, n == 1 and "" or "s")
+	end
+end
+
+local function reveal_others()
+	local n = 0
+	for id in pairs(concealed) do
+		if ticks[id] then
+			ticks[id].on = false
+		end
+		local obj = level.object_by_id(id)
+		if obj and not is_me(obj) then
+			set_bones(obj, true)
+			local back = saved_visual[id]
+			if type(back) == "string" and visual_name(obj) ~= back then
+				pcall(function() obj:set_visual_name(back) end)
+			end
+		end
+		n = n + 1
+	end
+	concealed, saved_visual = {}, {}
+	conceal_logged, visual_err = false, false
+	if n > 0 then
+		log("close-up: showed %s model%s again", n, n == 1 and "" or "s")
+	end
 end
 
 -------------------------------------------------------------------------------
@@ -845,16 +844,21 @@ end
 -- carries is released (this world is thrown away: also no knife, so quick
 -- melee mods have nothing to swing), and each profile's worn items are made
 -- once (Master Core's create: condition, upgrades, addons) and kept in the
--- backpack, where the model does not show them. A click then only moves that
--- profile's items into their slots: no items made or released, no waits.
--- A profile not in the wardrobe yet (created in the lobby, or still being
--- made) is added and worn when its items are online. Empty profiles and None
--- show the bare model.
+-- backpack, where the model does not show them. A row in the editor then
+-- only moves that profile's items into their slots: no items made or
+-- released, no waits. A profile not in the wardrobe yet (created in the
+-- lobby, or still being made) is worn when its items are online. Empty
+-- profiles and None show the bare model.
 
 local WORN = { 7, 12, 13, 2, 3 } -- the order they are put on: the outfit first
 local SHOWN_ACTIVE = { [2] = true, [3] = true }
+local WEAPON_FOR = 4000 -- ms the worn weapon's draw is retried
+local WEAPON_EVERY = 300 -- ms between tries
 
 local wardrobe = {} -- name -> { slots = { [slot] = id }, waiting = n, active = slot }
+local looked -- the profile whose items the actor carries now
+local want_look -- a profile to wear once its wardrobe items are online
+local want_weapon -- { slot, until_t, next }: the worn weapon to draw
 
 local function worn_records(c)
 	local out = {}
@@ -866,66 +870,6 @@ local function worn_records(c)
 		end
 	end
 	return out
-end
-
--- Makes the worn items of profile name; then(name) when all are online.
-local function dress(name, then_fn)
-	local c = profile().character_of(name)
-	local w = { slots = {}, waiting = 0 }
-	wardrobe[name] = w
-	if not c then
-		return w
-	end
-	w.active = SHOWN_ACTIVE[c.active] and c.active or nil
-	local function one_done()
-		w.waiting = w.waiting - 1
-		if w.waiting == 0 then
-			log("wardrobe: %s ready", name)
-			mark("wardrobe: " .. name .. " ready")
-			if then_fn then
-				then_fn(name)
-			end
-		end
-	end
-	for s, rec in pairs(worn_records(c)) do
-		local copy = {}
-		for k, v in pairs(rec) do
-			copy[k] = v
-		end
-		copy.slot, copy.belt = nil, nil
-		local se = master_core_items.create(copy, db.actor, {
-			packet = not in_session(), attach = true, wait = 30000, tag = "[PersistentStalkers] lobby",
-			done = function(id, ok)
-				if not ok then
-					w.slots[s] = nil
-				end
-				one_done()
-			end,
-		})
-		if se then
-			w.slots[s] = se.id
-			w.waiting = w.waiting + 1
-		end
-	end
-	if w.waiting == 0 and then_fn then
-		then_fn(name)
-	end
-	return w
-end
-
--- Everything the actor carries goes: the lobby starts bare.
-local function strip()
-	local ids = {}
-	db.actor:iterate_inventory(function(_, obj)
-		ids[#ids + 1] = obj:id()
-	end, db.actor)
-	local n = 0
-	for _, id in ipairs(ids) do
-		if pcall(alife_release_id, id) then
-			n = n + 1
-		end
-	end
-	log("the actor's %s items released", n)
 end
 
 -- Puts profile name's worn items on (instant when they are made).
@@ -962,57 +906,87 @@ local function wear(name)
 	log("the model wears %s", name)
 end
 
-local function show_look(name)
-	if name == nil or name == profile().NONE then
-		wear(profile().NONE)
-		return
-	end
-	local w = wardrobe[name]
-	if not w then
-		want_look = name
-		dress(name, function(n)
-			if want_look == n then
-				want_look = nil
-				wear(n)
-			end
-		end)
-	elseif w.waiting > 0 then
-		want_look = name -- worn when its last item is online (dress's then)
-	else
+-- Worn once its items are online, if it is still the one wanted.
+local function wear_when_ready(name)
+	if want_look == name then
 		want_look = nil
 		wear(name)
 	end
 end
 
--- The whole wardrobe, at the start: every profile's worn items.
-local function fill_wardrobe(first)
-	strip()
-	wardrobe = {}
-	looked = nil
-	local p = profile()
-	local first_done = function(n)
-		if want_look == n then
-			want_look = nil
-			wear(n)
+-- Makes the worn items of profile name; wears it when all are online.
+local function dress(name)
+	local c = profile().character_of(name)
+	local w = { slots = {}, waiting = 0 }
+	wardrobe[name] = w
+	if not c then
+		return w
+	end
+	w.active = SHOWN_ACTIVE[c.active] and c.active or nil
+	for s, rec in pairs(worn_records(c)) do
+		local copy = {}
+		for k, v in pairs(rec) do
+			copy[k] = v
+		end
+		copy.slot, copy.belt = nil, nil
+		local se = master_core_items.create(copy, db.actor, {
+			packet = not in_session(), attach = true, wait = 30000, tag = "[PersistentStalkers] lobby",
+			done = function(id, ok)
+				if not ok then
+					w.slots[s] = nil
+				end
+				w.waiting = w.waiting - 1
+				if w.waiting == 0 then
+					log("wardrobe: %s ready", name)
+					boot().mark("wardrobe: " .. name .. " ready")
+					wear_when_ready(name)
+				end
+			end,
+		})
+		if se then
+			w.slots[s] = se.id
+			w.waiting = w.waiting + 1
 		end
 	end
-	if first and first ~= p.NONE then
-		want_look = first
-		dress(first, first_done)
-	else
-		wear(p.NONE)
+	if w.waiting == 0 then
+		wear_when_ready(name)
 	end
-	for _, name in ipairs(p.profiles()) do
-		if not wardrobe[name] then
-			dress(name, first_done)
-		end
+	return w
+end
+
+local function show_look(name)
+	if name == nil or name == profile().NONE then
+		want_look = nil
+		wear(profile().NONE)
+		return
+	end
+	want_look = name
+	local w = wardrobe[name] or dress(name)
+	if w.waiting == 0 then
+		wear_when_ready(name)
 	end
 end
 
--- The panel's selection changed (persistent_stalkers_menu, "lobby" use).
-function selected(name)
-	if active and name ~= looked then
-		show_look(name)
+-- Everything the actor carries goes, then every profile's worn items are made.
+local function fill_wardrobe(first)
+	local ids = {}
+	db.actor:iterate_inventory(function(_, obj)
+		ids[#ids + 1] = obj:id()
+	end, db.actor)
+	local n = 0
+	for _, id in ipairs(ids) do
+		if pcall(alife_release_id, id) then
+			n = n + 1
+		end
+	end
+	log("the actor's %s items released", n)
+	wardrobe = {}
+	looked = nil
+	show_look(first)
+	for _, name in ipairs(profile().profiles()) do
+		if not wardrobe[name] then
+			dress(name)
+		end
 	end
 end
 
@@ -1024,9 +998,7 @@ local function hold_weapon(now)
 	local w = want_weapon
 	if w then
 		local a = db.actor
-		if a:active_slot() == w.slot then
-			-- drawn; keep watching until until_t (a late hide of the old one)
-		elseif now >= w.next then
+		if a:active_slot() ~= w.slot and now >= w.next then
 			w.next = now + WEAPON_EVERY
 			pcall(function() a:activate_slot(w.slot) end)
 			return
@@ -1046,185 +1018,124 @@ local function hold_weapon(now)
 	end
 end
 
+-- The panel's selection changed (persistent_stalkers_menu, "lobby" use).
+function selected(name)
+	if active and name ~= looked then
+		show_look(name)
+	end
+	-- a row in the editor only previews. Done (and Esc back) selects, and
+	-- that is the nameplate the others should show.
+	if active and not editing then
+		send_nameplate()
+	end
+	if GUI and editing and GUI.FillGoodwill then
+		pcall(GUI.FillGoodwill, GUI)
+	end
+end
+
 -------------------------------------------------------------------------------
--- The window: the profile panel on the left, the main menu's options on the
--- right
---
--- The options are the main menu's own: each button calls the method of
--- ui_main_menu.main_menu that the main menu's button of that name calls,
--- with this window as its self, so Load game opens the same load dialog,
--- Options the same options, New game the same faction select, Quit the same
--- box (and xrRazom's patches of those methods, looked up at the click, are
--- in it too). Those dialogs come back to their owner as they do to the main
--- menu (owner:ShowDialog(true), owner:Show(true)); the methods use only
--- what this window has as well: message_box, mbox_mode, SetMsg, StartGame,
--- LoadLastSave (ours: the save that was newest at the main menu). Not the engine's own button list (InitMMShniaga): in a game
--- it is the pause menu's page, and outside the main menu it is untried.
+-- Change profile (the window's editor): this machine's close-up, the other
+-- models hidden here.
 
--- { the main menu's button, its method, its caption (a string id), who sees it }
-local OPTIONS = {
-	{ "btn_newgame", "OnButton_new_game", "ui_mm_newgame", "host" },
-	{ "btn_load", "OnButton_load_clicked", "ui_mm_load_game", "host" },
-	{ "btn_lastsave", "OnButton_last_save", "ui_mm_last_save", "all" },
-	{ "btn_options", "OnButton_options_clicked", "ui_mm_options_n", "all" },
-	{ "btn_mcm", "OnButton_mcm_clicked", "ui_mm_menu_mcm", "mcm" },
-	{ "btn_quit_to_mm", "OnButton_disconnect_clicked", "Leave the lobby", "all" },
-	{ "btn_quit", "OnButton_quit_clicked", "ui_mm_quit2windows", "all" },
-}
-local OPTION_STEP = 38 -- units between the options
-
--- The message box's events, to the main menu's methods of the same use.
-local BOX_EVENTS = {
-	{ "MESSAGE_BOX_OK_CLICKED", "OnMsgOk" },
-	{ "MESSAGE_BOX_CANCEL_CLICKED", "OnMsgCancel" },
-	{ "MESSAGE_BOX_YES_CLICKED", "OnMsgYes" },
-	{ "MESSAGE_BOX_NO_CLICKED", "OnMsgNo" },
-	{ "MESSAGE_BOX_QUIT_GAME_CLICKED", "OnMessageQuitGame" },
-	{ "MESSAGE_BOX_QUIT_WIN_CLICKED", "OnMessageQuitWin" },
-}
-
--- The dialogs the main menu's methods open, kept on self under these names.
-local CHILDREN = { "new_game_dlg", "peer_faction_dlg", "load_dlg", "save_dlg", "opt_dlg", "mcm_dlg" }
-
--- Calls the main menu's method `name` with w as its self.
-local function pass(w, name, ...)
-	local cls = ui_main_menu and ui_main_menu.main_menu
-	local fn = cls and cls[name]
-	if type(fn) ~= "function" then
-		log("! the main menu has no %s", name)
-		return
+function edit_begin()
+	if editing then
+		return false
 	end
-	log("%s (the main menu's)", name)
-	return fn(w, ...)
-end
-
-class "UILobby" (CUIScriptWnd)
-
-function UILobby:__init() super()
-	self:SetWndRect(Frect():set(0, 0, 1024, 768))
-	self:SetAutoDelete(true)
-	self.mbox_mode = 0
-	self.panel = menu().ProfilePanel(self, "lobby")
-	local xml = CScriptXmlInit()
-	xml:ParseFile(XML_FILE)
-	self.hint = xml:InitTextWnd("lobby:hint", self)
-
-	self.message_box = CUIMessageBoxEx()
-	self:Register(self.message_box, "msg_box")
-	for _, e in ipairs(BOX_EVENTS) do
-		local method = e[2]
-		self:AddCallback("msg_box", ui_events[e[1]], function() try(method, pass, self, method) end, self)
+	edit_from = profile().current_profile()
+	editing = true
+	local s = close_for(my_spot())
+	if s then
+		log("close-up on spot %s: %.2f, %.2f, %.2f", my_spot(), s.x, s.y, s.z)
+	else
+		log("no close-up in the place: snapshot(\"close\") while framed on your slot; the camera stays wide")
 	end
-
-	self.options = {}
-	for _, o in ipairs(OPTIONS) do
-		local name, method, caption = o[1], o[2], o[3]
-		local b = xml:Init3tButton("lobby:option", self)
-		self:Register(b, name)
-		self:AddCallback(name, ui_events.BUTTON_CLICKED, function() try(method, pass, self, method) end, self)
-		b:TextControl():SetText(game.translate_string(caption))
-		self.options[#self.options + 1] = { button = b, who = o[4], name = name }
-	end
-	self.btn_admit = xml:Init3tButton("lobby:btn_admit", self)
-	self:Register(self.btn_admit, "lobby_admit")
-	self:AddCallback("lobby_admit", ui_events.BUTTON_CLICKED, function() try("admit", self.OnAdmit, self) end, self)
-	self:Refresh()
-end
-
-function UILobby:__finalize()
-end
-
--- The options this machine has, one under the other from the option node.
-function UILobby:Refresh()
-	local host = is_host()
-	local has_mcm = ui_mcm ~= nil and ui_mcm.UI_MCM ~= nil
-	local first = self.options[1].button:GetWndPos()
-	local x, y = first.x, self.top_y or first.y
-	self.top_y = y
-	for _, o in ipairs(self.options) do
-		local show = o.who == "all" or (o.who == "host" and host) or (o.who == "mcm" and has_mcm)
-		o.button:Show(show)
-		if show then
-			o.button:SetWndPos(vector2():set(x, y))
-			y = y + OPTION_STEP
-		end
-	end
-	-- only a host with a session can let anyone in
-	self.btn_admit:Show(host and in_session())
-	self.btn_admit:SetWndPos(vector2():set(x, y + 12))
-	self.btn_admit:TextControl():SetText(admitting and "Players can join (experimental): on" or "Let players join (experimental)")
-	self.hint:SetText(host
-		and "Pick who you play, then load a game or start a new one: you play the profile you picked."
-		or "Pick who you play. The host loads the game.")
-end
-
-function UILobby:OnAdmit()
-	admit(not admitting)
-	self:Refresh()
-end
-
--- What the main menu's methods call on their self.
-
--- New game (from the faction select): the main menu's StartGame (xrRazom's
--- when it is installed) disconnects this world and starts the new one.
-function UILobby:StartGame()
-	stop()
-	pass(self, "StartGame")
-end
-
--- After Last save's box (the main menu's OnButton_last_save and OnMsgYes):
--- the newest save when the lobby was entered (write_marker), not the
--- engine's load_last_save, which knows no save of this session here.
-function UILobby:LoadLastSave()
-	if not last_save then
-		log("! no save was found when the lobby was entered: the engine's last save")
-		pass(self, "LoadLastSave")
-		return
-	end
-	log("loading the last save: %s", last_save)
-	exec_console_cmd("load " .. last_save)
-end
-
--- New game's (xrRazom's: a client gets its peer faction screen).
-function UILobby:ShowFactionUI()
-	pass(self, "ShowFactionUI")
-end
-
--- Options and MCM report a change that needs a restart.
-function UILobby:SetMsg(text, tmr, align)
-	if text and text ~= "" then
-		self.hint:SetText(text)
-	end
-end
-
--- One of the main menu's dialogs is open in this window's place.
-function UILobby:ChildOpen()
-	for _, k in ipairs(CHILDREN) do
-		local d = self[k]
-		if d and d:IsShown() then
-			return true
-		end
-	end
-	return false
-end
-
-function UILobby:Update()
-	CUIScriptWnd.Update(self)
-	if self.panel then
-		local ok, err = pcall(self.panel.Update, self.panel)
-		if not ok then
-			log("! the panel failed (%s)", tostring(err))
-			self.panel = nil
-		end
-	end
-end
-
--- Every key ends here: nothing closes the window or reaches the game (Esc,
--- the inventory, the PDA, movement). The ways out are the options.
-function UILobby:OnKeyboard(dik, keyboard_action)
-	CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	pcall(hold_camera)
+	pcall(conceal_others)
 	return true
 end
+
+-- True and the profile selected when the editor opened; false when it was not open.
+function edit_end()
+	if not editing then
+		return false
+	end
+	local back = edit_from
+	editing, edit_from = false, nil
+	reveal_others()
+	return true, back
+end
+
+-------------------------------------------------------------------------------
+-- Nameplates: name, faction and class of the profile actually selected (a
+-- row tried on in Change profile is not the nameplate until Done; the host's
+-- broadcast uses this too). The xrRazom nickname is added when the plaque is
+-- drawn. None has no character.
+
+local function my_card()
+	local p = profile()
+	local name = p.current_profile()
+	local card = { profile = name == p.NONE and "None" or tostring(name) }
+	if name == p.NONE then
+		return card
+	end
+	local ok, info = pcall(p.info, name)
+	local c = ok and type(info) == "table" and info.character
+	if type(c) == "table" then
+		if type(c.faction) == "string" and c.faction ~= "" then
+			local okf, s = pcall(game.translate_string, c.faction)
+			card.faction = (okf and type(s) == "string" and s) or c.faction
+		end
+		local okc, cls = pcall(persistent_stalkers_menu.class_name, c)
+		if okc and type(cls) == "string" and cls ~= "" then
+			card.class = cls
+		end
+	end
+	return card
+end
+
+local function card_text(card, player)
+	local lines = {}
+	local function add(s)
+		if type(s) == "string" and s ~= "" then
+			lines[#lines + 1] = s
+		end
+	end
+	add(player)
+	if type(card) == "table" then
+		if type(card.profile) == "string" and card.profile ~= "" then
+			add("<" .. card.profile .. ">")
+		end
+		add(card.faction)
+		add(card.class)
+	end
+	return #lines > 0 and table.concat(lines, "\\n") or ""
+end
+
+-- One plaque per player over its spot: { spot, x, y, z (the spot), text }.
+-- None in the editor, where one model fills the view. Stand-ins have none.
+function plates()
+	local list = {}
+	if editing or not origin then
+		return list
+	end
+	local me = master_core_net.nick()
+	local function add(spot, card, nick)
+		local x, y, z = spot_pos(spot)
+		list[#list + 1] = { spot = spot, x = x, y = y, z = z, text = card_text(card, nick) }
+	end
+	if order then
+		for i, nick in ipairs(order) do
+			if i > SLOTS then break end
+			add(i, nick == me and my_card() or cards[nick] or {}, nick)
+		end
+	else
+		add(my_spot(), my_card(), me)
+	end
+	return list
+end
+
+-------------------------------------------------------------------------------
+-- The window (persistent_stalkers_lobby_ui.UILobby)
 
 -- Open, or away for one of the main menu's dialogs (it brings it back).
 local function window_open()
@@ -1232,7 +1143,7 @@ local function window_open()
 end
 
 local function open_window()
-	local ok, w = pcall(function() return UILobby() end)
+	local ok, w = pcall(function() return persistent_stalkers_lobby_ui.UILobby() end)
 	if not ok then
 		log("! the window could not be built: %s", tostring(w))
 		return false
@@ -1245,68 +1156,174 @@ local function open_window()
 end
 
 -------------------------------------------------------------------------------
+-- The rookie village's fires burn in the lobby. With no one at the camp the
+-- smart terrain keeps them out (bind_campfire), so every few seconds those
+-- near the row are lit again.
+
+local FIRE_RANGE = 30 -- m from the row
+local FIRE_EVERY = 3000 -- ms
+local fires_logged = false
+
+local function light_campfires()
+	local all = bind_campfire and bind_campfire.campfires_all
+	if type(all) ~= "table" or not origin then
+		return 0
+	end
+	local n = 0
+	for _, b in pairs(all) do
+		local obj = b.object
+		local cf = b.campfire or (obj and obj:get_campfire())
+		if obj and cf then
+			local p = obj:position()
+			local dx, dz = p.x - origin.x, p.z - origin.z
+			if dx * dx + dz * dz <= FIRE_RANGE * FIRE_RANGE and not cf:is_on() then
+				cf:turn_on()
+				n = n + 1
+			end
+		end
+	end
+	if n > 0 and not fires_logged then
+		fires_logged = true
+		log("%d campfires lit near the row", n)
+	end
+	return n
+end
+
+-------------------------------------------------------------------------------
+-- The faction relations as the engine read them at the start of the session
+-- (2026-11-16: after a lobby, a loaded save's loners fought each other, and
+-- the PDA's relations table was scrambled). Every new game, the lobby's too,
+-- runs Anomaly's game_relations.reset_all_relations(), which reads
+-- [communities_relations] by its own faction order (factions_table_all: actor,
+-- bandit, dolg, ...) while the file's columns are in the order of
+-- [game_relations] communities (actor, monster, trader, army_npc, ...): every
+-- row lands shifted (stalker to stalker reads the killer column, -2000). The
+-- relations live in the engine for the whole session, and a load restores only
+-- the pairs that changed in play (game_relations.load_relation): the rest of
+-- the scrambled table stays for every save loaded after the lobby. So the lobby
+-- sets the whole table again, by the file's own column order, when it starts.
+function fix_relations()
+	local ini = ini_file("creatures\\game_relations.ltx")
+	local list = ini and ini:r_string_ex("game_relations", "communities")
+	if type(list) ~= "string" then
+		log("! relations: no communities in game_relations.ltx")
+		return 0
+	end
+	local parts, names, col = {}, {}, {}
+	for v in list:gmatch("[^,]+") do
+		parts[#parts + 1] = v:match("^%s*(.-)%s*$")
+	end
+	for k = 1, #parts - 1, 2 do
+		local i = tonumber(parts[k + 1])
+		if parts[k] ~= "" and i then
+			names[#names + 1] = parts[k]
+			col[parts[k]] = i + 1
+		end
+	end
+	local set, bad = 0, 0
+	for _, a in ipairs(names) do
+		local row = ini:r_string_ex("communities_relations", a)
+		if type(row) == "string" then
+			local vals = {}
+			for v in row:gmatch("[^,]+") do
+				vals[#vals + 1] = tonumber((v:gsub("%s", "")))
+			end
+			for _, b in ipairs(names) do
+				local v = vals[col[b]]
+				if v and pcall(relation_registry.set_community_relation, a, b, v) then
+					set = set + 1
+				else
+					bad = bad + 1
+				end
+			end
+		end
+	end
+	log("relations: %d faction pairs set from game_relations.ltx by its own column order (%d not set)", set, bad)
+	return set
+end
+
+-------------------------------------------------------------------------------
 -- Start and stop
 
--- o: the row's origin (a client gets the host's); names: the spot order.
+-- o: the host's slot (a client gets the host's); names: the spot order.
 local function start(o, names)
 	if active then
 		return
 	end
+	cams, place_maps = nil, nil -- this lobby reads the config again
 	origin = o or origin_here()
 	order = names
 	active = true
-	looked = nil
-	want_look = nil
-	gone_t = nil
+	looked, want_look, gone_t = nil, nil, nil
 	old_cam = nil
 	pcall(function() old_cam = level.get_active_cam() end)
-	log("started at %.1f, %.1f, %.1f facing %.2f, %.2f (spot %s, %s)", origin.x, origin.y, origin.z, origin.fx, origin.fz,
-		my_spot(), in_session() and (is_host() and "host" or "client") or "solo")
-	mark("the lobby started")
-	if isolating then
-		pcall(callback_report, 20)
+	log("started on %s at %.1f, %.1f, %.1f facing %.2f, %.2f (spot %s, %s)", level.name(), origin.x, origin.y, origin.z,
+		origin.fx, origin.fz, my_spot(), in_session() and (is_host() and "host" or "client") or "solo")
+	-- nothing of anyone's character is read, applied or written here (on a
+	-- real level a client's arrival would otherwise run)
+	pcall(function() persistent_stalkers.lobby_started() end)
+	pcall(join().plates_off)
+	if not is_client() then
+		join().announce(true)
 	end
-	if restore_kp then -- the load is over: every later load asks for a key as before
-		restore_kp = false
-		keypress_back()
+	try("relations", fix_relations)
+	boot().mark("the lobby started")
+	if boot().isolation() then
+		pcall(boot().callback_report, 20)
 	end
-	aim() -- the camera to the front (hold_aim, over the next updates)
+	glide, glide_close, applied = nil, false, nil
+	editing, edit_from = false, nil
+	cards = {}
+	aim() -- the bodies to the camera (hold_aim, over the next updates)
 	-- no level.disable_input: it stops all input, the dialog's cursor too
 	-- (2026-11-14: the window showed and the mouse did not move). The
 	-- window, a dialog, is what holds the player.
-	try("HUD off", level.hide_indicators_safe)
-	pcall(hide_hud_inventory)
+	try("HUD off", hud_off)
 	try("actor on its spot", hold_actor)
 	try("camera", hold_camera)
 	-- nothing in use here: the selection is what the next game is played with
 	profile().unpin()
 	open_window()
 	try("wardrobe", fill_wardrobe, profile().current_profile())
-	npcs = {}
+	forget_npcs(false)
 	try("stand-ins", fill_spots)
+	next_fire = 0
+	send_nameplate()
 end
 
--- Camera, input and HUD back; the window closed. Not a disconnect.
-function stop()
-	if not active then
-		return
-	end
+-- Camera, HUD, weapon and markers back; the window closed. level_going: the
+-- level takes the stand-ins and the window with it. Not a disconnect.
+local function teardown(level_going)
 	active = false
-	pending = nil
-	asking = nil
+	pending, asking = nil, nil
 	aiming, want_weapon = nil, nil
+	cams = nil
+	glide, glide_close, applied = nil, false, nil
+	editing, edit_from = false, nil
+	if not is_client() then
+		join().announce(false)
+	end
+	pcall(join().plates_back)
+	reveal_others()
+	hide_body()
 	pcall(level.remove_cam_custom_position_direction)
 	if old_cam then
 		pcall(level.set_active_cam, old_cam)
 	end
-	pcall(level.show_indicators)
+	pcall(hud_on)
 	pcall(game.actor_lower_weapon, false)
-	release_npcs()
-	if GUI and GUI:IsShown() then
+	forget_npcs(not level_going)
+	if not level_going and GUI and GUI:IsShown() then
 		GUI:HideDialog()
 	end
 	GUI = nil
-	log("stopped")
+	log(level_going and "the level is going: stopped" or "stopped")
+end
+
+function stop()
+	if active then
+		teardown(false)
+	end
 end
 
 -------------------------------------------------------------------------------
@@ -1322,114 +1339,160 @@ local function names_now()
 	return list
 end
 
-local function tell(target)
-	master_core_net.send_table("pst_lobby", target, { x = origin.x, y = origin.y, z = origin.z,
-		fx = origin.fx, fz = origin.fz, order = names_now() })
+local function card_of(t)
+	if type(t) ~= "table" then
+		return nil
+	end
+	local prof = t.profile or t.name
+	if type(prof) ~= "string" or prof == "" then
+		return nil
+	end
+	return { profile = prof, faction = t.faction, class = t.class }
 end
 
--- A client on fake_start asks; the host answers when its lobby is on.
-local function ev_question(args, sender)
-	if active and is_host() then
-		tell(sender)
+local function decoded(args)
+	if type(args) == "table" then
+		return args
 	end
+	local ok, t = pcall(master_core_text.decode, args)
+	return ok and type(t) == "table" and t or nil
+end
+
+-- The event's sender is "host" or a netid. The nameplate is stored and drawn
+-- by nickname, which the message carries (nick_of when an older one does not).
+local function card_nick(t, sender)
+	local nick = type(t) == "table" and t.nick
+	if type(nick) == "string" and nick ~= "" then
+		return nick
+	end
+	local ok, n = pcall(master_core_net.nick_of, sender)
+	if ok and type(n) == "string" and n ~= "" then
+		return n
+	end
+	return nil
+end
+
+-- The profile just selected, to the host and every client. Each machine draws
+-- its own plate from the profile; this is what the others show.
+function send_nameplate()
+	if not (active and in_session()) then
+		return false
+	end
+	local nick = master_core_net.nick()
+	local card = my_card()
+	if type(nick) ~= "string" or nick == "" then
+		return false
+	end
+	local ok = master_core_net.send_table("pst_lobby_card", nil, { nick = nick, card = card })
+	log("nameplate sent: %s", card_text(card, nick))
+	return ok and true or false
+end
+
+local function ev_nameplate(args, sender)
+	local t = decoded(args)
+	local card = t and card_of(t.card)
+	local nick = card_nick(t, sender)
+	if not card or not nick or nick == master_core_net.nick() then
+		return
+	end
+	cards[nick] = card
+	log("nameplate from %s: %s", nick, card_text(card, nick))
+end
+
+local function tell(target)
+	local pack = {}
+	local me = master_core_net.nick()
+	for n, c in pairs(cards) do
+		pack[n] = c
+	end
+	if type(me) == "string" and me ~= "" then
+		pack[me] = my_card()
+	end
+	master_core_net.send_table("pst_lobby", target, { x = origin.x, y = origin.y, z = origin.z,
+		fx = origin.fx, fz = origin.fz, sp = origin.sp, sd = origin.sd, order = names_now(), cards = pack })
+end
+
+-- A client asks; the host answers when its lobby is on.
+local function ev_question(args, sender)
+	if not (active and is_host()) then
+		return
+	end
+	local t = decoded(args)
+	local card = t and card_of(t.card)
+	local nick = card_nick(t, sender)
+	if card and nick then
+		cards[nick] = card
+	end
+	tell(sender)
 end
 
 local function ev_lobby(args)
 	if is_host() or not on_level() then
 		return
 	end
-	local t = master_core_text.decode(args)
-	if type(t) ~= "table" or type(t.x) ~= "number" or type(t.order) ~= "table" then
+	local t = decoded(args)
+	if not t or type(t.x) ~= "number" or type(t.order) ~= "table" then
 		return
 	end
-	local o = { x = t.x, y = t.y, z = t.z, fx = t.fx, fz = t.fz }
+	local o = { x = t.x, y = t.y, z = t.z, fx = t.fx, fz = t.fz, sp = tonumber(t.sp), sd = tonumber(t.sd) }
 	if not active then
 		asking = nil
 		start(o, t.order)
 	else
 		origin, order = o, t.order
 	end
-end
-
--- What xrRazom's OnPlayerConnected does on a real level, for fake_start: it
--- leaves a player who connects there waiting ("pre-game").
-local function admit_player(player_netid, nickname)
-	local a = db.actor
-	local pos = a:position()
-	local players = XrrPlayers()
-	if players:HasPeerData(nickname) then
-		log("admitting %s (known): SendLoadLevel %s", tostring(nickname), level.name())
-		players:SendLoadLevel(player_netid, level.name(), a:level_vertex_id(), a:game_vertex_id(),
-			pos.x, pos.y, pos.z, players:GetPeerFaction(nickname))
-	else
-		local flags = 0
-		if not has_alife_info("story_mode_disabled") then flags = flags + 1 end
-		if alife_storage_manager.get_state().enable_warfare_mode then flags = flags + 2 end
-		local eco = math.floor(tonumber(game_difficulties.get_eco_factor("type")) or 1)
-		log("admitting %s (new): SendShowStart %s", tostring(nickname), level.name())
-		players:SendShowStart(player_netid, level.name(), a:level_vertex_id(), a:game_vertex_id(),
-			pos.x, pos.y, pos.z, flags, eco)
-	end
-end
-
--- Host: let players into the lobby (experimental). Wraps xrRazom's
--- xrr_net_server.OnPlayerConnected; off puts its own back.
-function admit(on)
-	if on and not wrapped then
-		if not (xrr_net_server and xrr_net_server.OnPlayerConnected) then
-			log("! no xrr_net_server.OnPlayerConnected: xrRazom is not there")
-			return false
+	if type(t.cards) == "table" then
+		local got = {}
+		for n, c in pairs(t.cards) do
+			got[n] = card_of(c)
 		end
-		wrapped = xrr_net_server.OnPlayerConnected
-		xrr_net_server.OnPlayerConnected = function(player_netid, nickname, ...)
-			wrapped(player_netid, nickname, ...)
-			local mine = false
-			pcall(function() mine = player_netid == XrrNet():GetMySNETID() end)
-			log("a player connected: %s (%s)%s", tostring(nickname), tostring(player_netid), mine and ", this machine" or "")
-			if active and admitting and not mine and on_level() then
-				try("admitting " .. tostring(nickname), admit_player, player_netid, nickname)
-			end
-		end
-		log("players can join: xrRazom's OnPlayerConnected is wrapped")
-	elseif not on and wrapped then
-		xrr_net_server.OnPlayerConnected = wrapped
-		wrapped = nil
-		log("players cannot join: xrRazom's OnPlayerConnected is its own again")
+		cards = got
 	end
-	admitting = on and wrapped ~= nil
-	return admitting
 end
 
 -------------------------------------------------------------------------------
 -- Callbacks
 
 local function on_game_loaded()
-	mark("the game is loaded (on_game_load)")
+	boot().mark("the game is loaded (on_game_load)")
 end
 
-local function on_first_update()
-	mark("the first update")
-	if not on_level() then
-		return
-	end
-	if in_session() and not is_host() then
-		-- a joining client also passes through fake_start on its way to the
-		-- host's level: only the host's word makes this the lobby
+-- The host's marker starts the lobby; a client asks the host.
+local function take_lobby()
+	if is_client() then
+		-- a joining client also passes through these levels on its way to
+		-- the host's: only the host's word makes this the lobby
 		asking = { t0 = time_global(), next = 0 }
-		log("a client on %s: asking the host whether this is the lobby", LEVEL)
+		log("a client on %s: asking the host whether this is the lobby", level.name())
 	else
-		local m = take_marker()
+		local m = boot().take_marker()
 		if m then
 			pending = { t = time_global() }
 			last_save = m.last
-			restore_kp = m.kp and true or false
-			log("a lobby game on %s: starting in %s ms (last save: %s)", LEVEL, SETTLE, tostring(last_save))
+			log("a lobby game on %s: starting in %s ms (last save: %s)", level.name(), SETTLE, tostring(last_save))
 		end
+	end
+end
+
+local function on_first_update()
+	boot().first_update()
+	place_maps = nil -- read again
+	boot().mark("the first update")
+	if on_level() then
+		take_lobby()
+	end
+	if lobby_game() then
+		-- after the other first-update callbacks when they registered first
+		-- (itms_manager does): the next updates cover one that registered later
+		pcall(boot().drop_lobby_autosave)
 	end
 end
 
 local function on_update()
 	local now = time_global()
+	if lobby_game() then
+		pcall(boot().drop_lobby_autosave)
+	end
 	if pending then
 		if not on_level() then
 			pending = nil
@@ -1444,7 +1507,7 @@ local function on_update()
 			asking = nil
 		elseif now >= asking.next then
 			asking.next = now + ASK_EVERY
-			master_core_net.send_table("pst_lobby_q", "host", { v = 1 })
+			master_core_net.send_table("pst_lobby_q", "host", { v = 1, nick = master_core_net.nick(), card = my_card() })
 		end
 		return
 	end
@@ -1456,10 +1519,22 @@ local function on_update()
 		return
 	end
 	pcall(hold_camera)
+	pcall(hud_off)
 	pcall(hold_actor)
 	pcall(hold_aim, now)
+	if now >= next_fire then
+		next_fire = now + FIRE_EVERY
+		pcall(light_campfires)
+	end
 	pcall(hold_weapon, now)
 	pcall(hold_npcs)
+	if editing then
+		if now >= next_conceal then
+			pcall(conceal_others)
+		end
+	elseif next(concealed) then
+		reveal_others()
+	end
 	if is_host() and in_session() and now >= next_tell then
 		next_tell = now + ASK_EVERY
 		order = names_now()
@@ -1480,139 +1555,31 @@ end
 
 local function on_net_destroy()
 	if active then
-		active = false
-		GUI = nil
-		pcall(level.remove_cam_custom_position_direction)
-		pcall(level.show_indicators)
-		pcall(game.actor_lower_weapon, false)
-		npcs = {} -- they go with the level
-		aiming, want_weapon = nil, nil
-		if old_cam then
-			pcall(level.set_active_cam, old_cam)
-		end
-		log("the level is going: stopped")
+		teardown(true)
 	end
-	pending = nil
-	asking = nil
+	pending, asking = nil, nil
 end
 
--------------------------------------------------------------------------------
--- From the main menu
-
--- The lobby's own spawn (gamedata\spawns\ps_lobby.spawn, made on this machine
--- by tools\build_lobby_spawn.sh from the game's all.spawn): the whole world
--- graph and patrol paths, but only fake_start's objects, so a new game builds
--- two objects instead of the whole Zone. Without it the lobby uses all.spawn.
-local SPAWN = "ps_lobby"
-
-function has_spawn()
-	local ok, found = pcall(function()
-		return getFS():exist("$game_spawn$", SPAWN .. ".spawn")
-	end)
-	return ok and found and true or false
-end
-
--- Starts the lobby's new game: no faction, so nothing leaves fake_start.
--- mm: the main menu (its StartGame, which xrRazom patches for hosting).
-function enter(mm)
-	if level.present() then
-		log("! enter: only from the main menu")
-		return false
-	end
-	local cfg = axr_main.config
-	for _, k in ipairs({ "new_game_faction", "new_game_map", "new_game_loadout", "new_game_icon" }) do
-		cfg:w_value("character_creation", k)
-	end
-	-- the debug F2 test map's switch (user's request, 2026-11-15): G.A.M.M.A.'s
-	-- sim_board.fill_start_position then fills no squads (the long part of a
-	-- new game's load), turns smart terrain respawns off for that world only
-	-- (ui_debug_launcher.toggle_respawn: the world's m_data), and clears it
-	cfg:w_value("character_creation", "new_game_test", true)
-	cfg:save()
-	-- no "press any key" after the lobby's load (user's request, 2026-11-15):
-	-- off now, on again when the lobby starts (or at the main menu)
-	local kp = keypress_on()
-	if not write_marker(kp) then
-		cfg:w_value("character_creation", "new_game_test")
-		cfg:save()
-		log("! enter: the marker could not be written")
-		return false
-	end
-	if kp then
-		exec_console_cmd("keypress_on_start 0")
-	end
-	local okm, nm = pcall(mcm_snapshot)
-	log("entering: %s MCM settings kept for the lobby's skipped mods", okm and tostring(nm) or ("! none: " .. tostring(nm)))
-	local spawn = has_spawn() and SPAWN or "all"
-	log("entering: a new test-map game from %s.spawn, with no faction, stays on %s", spawn, LEVEL)
-	mark("entering the lobby")
-	local function start()
-		if mm and mm.StartGame then
-			mm:StartGame()
-		else
-			exec_console_cmd("start server(all/single/alife/new) client(localhost)")
-		end
-	end
-	if spawn == "all" then
-		start()
-		return true
-	end
-	-- the main menu's StartGame (xrRazom's replacement) runs
-	-- "start server(all/...)": for this one call the global is wrapped so the
-	-- server reads the lobby's spawn instead, and every other step of it stays
-	local orig = _G.exec_console_cmd
-	_G.exec_console_cmd = function(cmd, ...)
-		if type(cmd) == "string" then
-			cmd = string.gsub(cmd, "server%(all/", "server(" .. SPAWN .. "/", 1)
-		end
-		return orig(cmd, ...)
-	end
-	local ok, err = pcall(start)
-	_G.exec_console_cmd = orig
-	if not ok then
-		log("! enter: %s", tostring(err))
-		return false
-	end
-	return true
-end
-
--- At the main menu (persistent_stalkers_menu.attach): a marker still there
--- means a lobby game never started (it is used up when the lobby starts), so
--- its test-map switch may still be set and would empty the next real new
--- game: both are cleared.
-function main_menu_check()
-	local text = master_core_text.read_file(marker_path())
-	if text and text ~= "" then
-		master_core_text.write_file(marker_path(), "")
-		local ok, t = pcall(master_core_text.decode, text)
-		if ok and type(t) == "table" and t.kp then
-			keypress_back()
-		end
-		local cfg = axr_main.config
-		cfg:w_value("character_creation", "new_game_test")
-		cfg:save()
-		log("a lobby game did not start: its marker and the test-map switch are cleared")
-	end
+local function on_before_save(flags)
+	boot().on_before_save(flags)
 end
 
 -------------------------------------------------------------------------------
 -- Console
 
 function status()
-	log("active %s, level %s, %s, spot %s, admitting %s, looked %s, window %s", tostring(active),
+	log("active %s, level %s, %s, spot %s, looked %s, window %s, editing %s", tostring(active),
 		level.present() and level.name() or "none", in_session() and (is_host() and "host" or "client") or "solo",
-		active and my_spot() or "-", tostring(admitting), tostring(looked), tostring(window_open()))
+		active and my_spot() or "-", tostring(looked), tostring(window_open()), tostring(editing))
+	local pl = load_cams()
+	log("place %s, camera %s, close-up %s", pl and pl.name or "none", pl and pl.camera and "from the config" or "free look",
+		pl and close_pose(pl, my_spot()) and "from the config" or "none")
 	if origin then
+		local a = db.actor and db.actor:position()
 		log("row at %.2f, %.2f, %.2f facing %.2f, %.2f; actor at %s", origin.x, origin.y, origin.z, origin.fx, origin.fz,
-			db.actor and string.format("%.2f, %.2f, %.2f", db.actor:position().x, db.actor:position().y, db.actor:position().z) or "-")
+			a and string.format("%.2f, %.2f, %.2f", a.x, a.y, a.z) or "-")
 	end
-	log("callbacks isolated %s, %d failures caught; %d mod scripts not started; %d MCM settings answered from the main menu's", tostring(isolating), iso_failed, skipping, mcm_cached)
-	for k, n in pairs(iso_seen) do
-		log("  %dx %s", n, k)
-	end
-	if blocking then
-		blocked_report(100)
-	end
+	boot().report()
 	for k, v in pairs(TUNE) do
 		log("  %s = %s", k, tostring(v))
 	end
@@ -1620,22 +1587,22 @@ end
 
 function tune(key, value)
 	if TUNE[key] == nil or type(value) ~= "number" then
-		log("! tune: one of cam_mode, face, custom, cam_back, cam_up, cam_side, cam_drop, drift, npcs, side, and a number")
+		log("! tune: one of cam_mode, face, drift, npcs, side, spacing, and a number")
 		return
 	end
 	TUNE[key] = value
 	log("%s = %s", key, tostring(value))
+	if active and origin and (key == "spacing" or key == "side") then
+		origin.sp, origin.sd = TUNE.spacing, TUNE.side
+	end
 	if active and (key == "cam_mode" or key == "face") then
 		aim()
-	end
-	if active and key == "custom" and value ~= 1 then
-		pcall(level.remove_cam_custom_position_direction)
 	end
 	if active and key == "npcs" then
 		if value == 1 then
 			try("stand-ins", fill_spots)
 		else
-			release_npcs()
+			forget_npcs(true)
 		end
 	end
 end
@@ -1649,6 +1616,15 @@ function cam(mode)
 	tune("cam_mode", mode)
 end
 
+-- The camera on screen, into the place for this map (the free camera,
+-- demo_record, is that camera while it flies). No argument: the lineup
+-- camera, relative to the host's slot. "close": the close-up, relative to
+-- this machine's slot, for every slot; "close", n: slot n's own. In the
+-- lobby; it uses the pose on the next update.
+function snapshot(which, slot)
+	record_camera(which, slot)
+end
+
 -------------------------------------------------------------------------------
 
 function on_game_start()
@@ -1659,17 +1635,21 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_first_update", on_first_update)
 	RegisterScriptCallback("actor_on_update", on_update)
 	RegisterScriptCallback("actor_on_net_destroy", on_net_destroy)
+	RegisterScriptCallback("on_before_save_input", on_before_save)
 	master_core_net.register("pst_lobby_q", ev_question)
 	master_core_net.register("pst_lobby", ev_lobby)
+	master_core_net.register("pst_lobby_card", ev_nameplate)
 end
 
 function on_game_end()
-	if wrapped then
-		admit(false)
-	end
 	stop()
 	UnregisterScriptCallback("on_game_load", on_game_loaded)
 	UnregisterScriptCallback("actor_on_first_update", on_first_update)
 	UnregisterScriptCallback("actor_on_update", on_update)
 	UnregisterScriptCallback("actor_on_net_destroy", on_net_destroy)
+	UnregisterScriptCallback("on_before_save_input", on_before_save)
 end
+
+-- The boot is loaded with this script: its console hook and, in a lobby
+-- game, the callback isolation start when it loads.
+pcall(boot)

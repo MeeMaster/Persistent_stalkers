@@ -1,0 +1,888 @@
+-- Persistent Stalkers: the lobby's boot (AGENTS.md, "The lobby").
+--
+-- What runs before the lobby exists: from the main menu (enter, the main menu
+-- check) and while a new game's scripts start (our axr_main.script asks
+-- startup_skip, through persistent_stalkers_lobby, before any script starts).
+--   - the marker: Lua starts again with the new game, so enter() leaves a
+--     file that says "this new game is the lobby";
+--   - "press any key" off for the lobby's load and the loads after it;
+--   - in a lobby game: every callback isolated, the skipped mods' scripts
+--     not started, MCM answered for their settings;
+--   - the console-command hook: loads timed, no game save in the lobby, a
+--     joining client's marker;
+--   - a new game started from the lobby carries the new game screen's choices.
+-- The scene itself is persistent_stalkers_lobby.
+
+local MARKER = "persistent_stalkers_lobby.txt"
+local MARKER_FOR = 180 -- s a marker counts (the load of the new game)
+local KP_NOTE = "persistent_stalkers_keypress.txt"
+local MCM_CACHE = "persistent_stalkers_lobby_mcm.txt"
+local CARRY_FILE = "persistent_stalkers_newgame.txt"
+local CARRY_FOR = 90 -- s
+local REPORT_TOP = 20
+-- The lobby's own spawn (gamedata\spawns\ps_lobby.spawn, made on this machine
+-- by tools\build_lobby_spawn.sh from the game's all.spawn): the world graph and
+-- the smart terrains, the actor at the selected place. Without it, all.spawn.
+local SPAWN = "ps_lobby"
+
+-- Formatted here: the game's printf replaces only %s (2026-11-14: "%.1f"
+-- came out as it is).
+local function log(fmt, ...)
+	local ok, text = pcall(string.format, fmt, ...)
+	printf("%s", "[PersistentStalkers] lobby: " .. (ok and text or fmt))
+end
+
+local function lobby()
+	return persistent_stalkers_lobby
+end
+
+local function join()
+	return persistent_stalkers_lobby_join
+end
+
+-- A file in $app_data_root$ (the profiles' folder).
+function app_path(name)
+	return getFS():update_path("$app_data_root$", name)
+end
+
+-- The lobby's load, step by step, in seconds of the process (os.clock):
+-- comparable between the main menu's Lua and the game's.
+function mark(what)
+	local ok, t = pcall(os.clock)
+	if ok and t then
+		log("timeline %.2f s: %s", t, what)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- The marker
+
+function marker_path()
+	return app_path(MARKER)
+end
+
+-- The marker's table when it is fresh, else nil. take: the file is emptied
+-- (no os.remove in the engine), fresh or not.
+function read_marker(take)
+	local text = master_core_text.read_file(marker_path())
+	if not text or text == "" then
+		return nil
+	end
+	if take then
+		master_core_text.write_file(marker_path(), "")
+	end
+	local ok, t = pcall(master_core_text.decode, text)
+	if ok and type(t) == "table" and type(t.t) == "number" and os.time() - t.t <= MARKER_FOR then
+		return t
+	end
+	return nil
+end
+
+function take_marker()
+	return read_marker(true)
+end
+
+-- The newest save, as the main menu's Last save finds it (no extension).
+local function newest_save()
+	local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*.scop")
+	if not flist or flist:Size() == 0 then
+		return nil
+	end
+	flist:Sort(FS.FS_sort_by_modif_down)
+	local file = flist:GetAt(0)
+	return file and (file:NameFull():gsub("%.scop$", "")) or nil
+end
+
+-- t: when; last: the newest save at the main menu (in the lobby, Last save is
+-- that one: the engine's load_last_save knows only this session's saves, none
+-- in the lobby); kp: "press any key" was switched off for it; client: a
+-- joining client's marker (its whole game is the lobby).
+function write_marker(fields)
+	local t = { t = os.time() }
+	for k, v in pairs(fields or {}) do
+		t[k] = v
+	end
+	return master_core_text.write_file(marker_path(), master_core_text.encode(t))
+end
+
+-------------------------------------------------------------------------------
+-- "Press any key" (keypress_on_start). Off for the lobby's load and the ones
+-- that follow it (the host's save, the client's copy of it: a client sitting
+-- on that prompt never receives the load), until the main menu. The cvar is
+-- saved by the engine and Lua starts again after every load, so a note file
+-- remembers that the lobby turned it off.
+
+function keypress_on()
+	local ok, on = pcall(get_console_cmd, 1, "keypress_on_start")
+	return ok and on and true or false
+end
+
+function keypress_back()
+	exec_console_cmd("keypress_on_start 1")
+	log("the loading screen's \"press any key\" is on again")
+end
+
+-- Off now. True when this turned it off (or had already: a second call, the
+-- client's marker, still remembers it); false when the player had it off.
+function keypress_hold()
+	local path = app_path(KP_NOTE)
+	if not keypress_on() then
+		local text
+		pcall(function() text = master_core_text.read_file(path) end)
+		return text == "1"
+	end
+	exec_console_cmd("keypress_on_start 0")
+	pcall(master_core_text.write_file, path, "1")
+	log("the loading screen's \"press any key\" is off")
+	return true
+end
+
+function keypress_release()
+	local path = app_path(KP_NOTE)
+	if master_core_text.read_file(path) ~= "1" then
+		return false
+	end
+	master_core_text.write_file(path, "")
+	keypress_back()
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- Every callback isolated in a lobby game (user's request, 2026-11-15)
+--
+-- The lobby world has none of the Zone's objects, and other mods' callbacks
+-- may expect them. axr_main runs a callback's registrants one after another
+-- with no pcall: under xrRazom one failing actor_on_first_update skips all
+-- the later ones (in game 2026-11-15: lc_custom.script failed, Body Health
+-- System's first update never ran and its next actor_on_update crashed the
+-- game), and an error in actor_on_update is fatal. In a lobby game every
+-- registrant of every callback is wrapped in a pcall at registration, as
+-- xrRazom does for actor_on_first_update in a session
+-- (xrr_callbacks.script). A failure is logged once per callback and error.
+-- Lua starts again with the next game, so a real game is never wrapped.
+-- Decided when this script is loaded: the marker is written before the new
+-- game starts and is used up only on its first update, after every
+-- on_game_start has registered its callbacks.
+
+local isolating = false
+local lobby_load = false -- the marker was fresh when this script was loaded
+local first_seen = false -- the first update has been
+local iso_wrap = {}      -- callback name -> { [registrant] = wrapper }
+local iso_seen = {}      -- "name: error" -> times
+local iso_failed = 0     -- failures caught
+CLIENT_LOBBY = false     -- this game is a client's lobby game (its marker said so)
+
+local function iso_report(name, err)
+	iso_failed = iso_failed + 1
+	local key = name .. ": " .. tostring(err)
+	local n = (iso_seen[key] or 0) + 1
+	iso_seen[key] = n
+	if n == 1 then
+		log("! isolated: %s", key)
+	end
+end
+
+-- Time spent in each registrant until the lobby has started (2026-11-16: the
+-- game loaded to the first update took 2.9 s): "callback  file:line" -> { ms, n }.
+local cb_time = {}
+local cb_timing = true
+
+local function cb_label(name, reg)
+	local f = type(reg) == "function" and reg or nil
+	if not f then
+		local ok, m = pcall(function() return reg[name] end)
+		f = ok and type(m) == "function" and m or nil
+	end
+	local where = "?"
+	if f and debug and debug.getinfo then
+		local ok, info = pcall(debug.getinfo, f, "S")
+		if ok and info and info.short_src then
+			where = (info.short_src:match("([^\\/]+)%.script") or info.short_src) .. ":" .. tostring(info.linedefined or "?")
+		end
+	end
+	return name .. "  " .. where
+end
+
+local function cb_timed(label, call, ...)
+	if not cb_timing then
+		return call(...)
+	end
+	local t0 = os.clock()
+	local ok, err = call(...)
+	local e = cb_time[label]
+	if not e then
+		e = { ms = 0, n = 0 }
+		cb_time[label] = e
+	end
+	e.ms = e.ms + (os.clock() - t0) * 1000
+	e.n = e.n + 1
+	return ok, err
+end
+
+local function iso_wrapper(name, reg)
+	local by = iso_wrap[name]
+	if not by then
+		by = setmetatable({}, { __mode = "k" })
+		iso_wrap[name] = by
+	end
+	local w = by[reg]
+	if w then
+		return w
+	end
+	local label = cb_label(name, reg)
+	local function run(f, ...)
+		local ok, err = cb_timed(label, pcall, f, ...)
+		if not ok then
+			iso_report(name, err)
+		end
+	end
+	if type(reg) == "function" then
+		w = function(...) run(reg, ...) end
+	else
+		-- a table or userdata with a method of the callback's name, as
+		-- axr_main.make_callback calls it
+		w = function(...)
+			local f = reg[name]
+			if f then
+				run(f, reg, ...)
+			end
+		end
+	end
+	by[reg] = w
+	return w
+end
+
+-- Logged once, when the lobby starts: the total per callback and the slowest registrants.
+function callback_report(max)
+	cb_timing = false
+	local list, per, total = {}, {}, 0
+	for label, e in pairs(cb_time) do
+		list[#list + 1] = { label = label, ms = e.ms, n = e.n }
+		local cb = label:match("^(%S+)")
+		per[cb] = (per[cb] or 0) + e.ms
+		total = total + e.ms
+	end
+	table.sort(list, function(a, b) return a.ms > b.ms end)
+	local cbs = {}
+	for cb, ms in pairs(per) do
+		cbs[#cbs + 1] = { cb = cb, ms = ms }
+	end
+	table.sort(cbs, function(a, b) return a.ms > b.ms end)
+	log("callbacks until the lobby started: %d ms in %d registrants", math.floor(total + 0.5), #list)
+	for i = 1, math.min(8, #cbs) do
+		log("  %6d ms  %s", math.floor(cbs[i].ms + 0.5), cbs[i].cb)
+	end
+	log("the slowest registrants:")
+	for i = 1, math.min(max or REPORT_TOP, #list) do
+		log("  %6d ms  %4dx  %s", math.floor(list[i].ms + 0.5), list[i].n, list[i].label)
+	end
+end
+
+local function isolate_callbacks()
+	if axr_main and axr_main.__pst_isolated then
+		return false, "already" -- this script loaded again (persistent_stalkers_dev.reload)
+	end
+	if not (axr_main and axr_main.callback_set and axr_main.callback_unset) then
+		return false
+	end
+	axr_main.__pst_isolated = true
+	local orig_set, orig_unset = axr_main.callback_set, axr_main.callback_unset
+	axr_main.callback_set = function(name, reg)
+		if reg ~= nil then
+			reg = iso_wrapper(name, reg)
+		end
+		return orig_set(name, reg)
+	end
+	axr_main.callback_unset = function(name, reg)
+		local by = iso_wrap[name]
+		return orig_unset(name, by and reg ~= nil and by[reg] or reg)
+	end
+	isolating = true
+	return true
+end
+
+function isolation()
+	return isolating, iso_failed
+end
+
+-- This game is a lobby game by its marker: a client's (the whole game), or
+-- the host's until its first update (which uses the marker up or not).
+function lobby_load_pending()
+	return CLIENT_LOBBY or (lobby_load and not first_seen)
+end
+
+-- The first update (persistent_stalkers_lobby): a client's marker is used up,
+-- so the next game is not a lobby.
+function first_update()
+	first_seen = true
+	if CLIENT_LOBBY then
+		pcall(take_marker)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- The skipped scripts and MCM
+--
+-- Our axr_main.script (built by tools/build_axr_main.js) asks startup_skip once,
+-- when a game starts and before any script is started: in a lobby game the
+-- scripts it must not load or start (persistent_stalkers_skip.names, every
+-- script an enabled mod ships that is not Anomaly's own, loose in gamedata or
+-- one the lobby needs), else nil: every script, as always.
+--
+-- MCM's options are not gathered from skipped mods (in game 2026-11-15:
+-- tasks_fetch asked MCM for one ZCP setting at load, and MCM's first get,
+-- ui_mcm.gather_options, loaded every *mcm script and through them their mods,
+-- 3.1 s). Only while gather_options runs, _G's __index (the engine's loader,
+-- which the modded exes already chain in _g_patches.script) answers nil for a
+-- skipped script, so MCM does not list it. Everywhere else a skipped script
+-- still loads when a kept one names it: blocking it always crashed the game
+-- (in game 2026-11-16: G.A.M.M.A.'s sim_board calls ZCP's smr_civil_war with no
+-- nil check, from se_actor, outside any pcall). Each ask is counted with the
+-- file that asked.
+
+local skipping = 0
+local blocked = {}      -- skipped script -> { n = times asked, by = { [caller] = true } }
+local blocking = false
+local gathering = false
+-- The full MCM in the lobby (user's request, 2026-11-16): when the player opens
+-- MCM from the lobby window, MCM's options are gathered again with nothing
+-- blocked (ui_mcm.init_opt_base, about 3 s), so every page is there with its
+-- real ranges, lists and functions. Once per lobby game.
+local full_gather = false
+local mcm_full = false
+local mcm_unknown = {}  -- paths MCM did not know (wrap_get)
+local mcm_cache = nil
+local mcm_cached = 0    -- lookups answered from the snapshot or axr_options
+
+local function caller()
+	if not (debug and debug.getinfo) then
+		return nil
+	end
+	for level = 3, 12 do
+		local info = debug.getinfo(level, "S")
+		if not info then
+			return nil
+		end
+		local src = info.short_src
+		if src and src ~= "[C]" and not src:find("persistent_stalkers_lobby", 1, true) then
+			return src:match("([^\\/]+)%.script") or src
+		end
+	end
+end
+
+local function wrap_gather(m)
+	if type(m) ~= "table" or type(m.gather_options) ~= "function" or m.__pst_gather then
+		return
+	end
+	local orig = m.gather_options
+	m.__pst_gather = true
+	m.gather_options = function(...)
+		gathering = not full_gather
+		local ok, a, b = pcall(orig, ...)
+		gathering = false
+		if not ok then
+			error(a, 0)
+		end
+		return a, b
+	end
+end
+
+-- Every MCM value, as the main menu's MCM (which has gathered every page) gives
+-- it, written by enter() and read in the lobby game: a skipped mod's page is not
+-- gathered there, and its own scripts still ask for its settings and do
+-- arithmetic with them (in game 2026-11-16: visual_memory_manager, Stealth
+-- Overhaul, crashed on stealth_mcm.get_config("memory") = nil, from the engine).
+local function mcm_walk(node, prefix, out, get)
+	if type(node) ~= "table" then
+		return
+	end
+	local path = node.id and (prefix and (prefix .. "/" .. node.id) or tostring(node.id)) or prefix
+	if type(node.gr) == "table" then
+		for _, child in ipairs(node.gr) do
+			mcm_walk(child, path, out, get)
+		end
+	elseif node.type and node.val ~= nil and path then
+		local ok, v = pcall(get, path)
+		local t = type(v)
+		if ok and (t == "boolean" or t == "number" or t == "string") then
+			out[path] = v
+		end
+	end
+end
+
+local function mcm_cache_read()
+	local text = master_core_text.read_file(app_path(MCM_CACHE))
+	local t = text and text ~= "" and master_core_text.decode(text)
+	return type(t) == "table" and t or {}
+end
+
+-- From the main menu's Lua, before a lobby game: nothing if MCM has not gathered.
+-- Merged over the file, never replacing it: the main menu reached by leaving a
+-- lobby keeps the lobby game's Lua, whose MCM gathered only the kept mods' pages
+-- (in game 2026-11-16: 167 values instead of 2527, and the next lobby crashed on
+-- death_manager's dph_loot_cond setting = nil). Returns the values read now.
+function mcm_snapshot()
+	if not (ui_mcm and type(ui_mcm.options) == "table" and #ui_mcm.options > 0 and ui_mcm.get) then
+		return 0
+	end
+	local out, n = {}, 0
+	for _, top in ipairs(ui_mcm.options) do
+		mcm_walk(top, nil, out, ui_mcm.get)
+	end
+	local all = mcm_cache_read()
+	for k, v in pairs(out) do
+		all[k] = v
+		n = n + 1
+	end
+	master_core_text.write_file(app_path(MCM_CACHE), master_core_text.encode(all))
+	mcm_cache = nil
+	return n
+end
+
+-- A setting MCM does not know (its page not gathered): read live from
+-- axr_options, where MCM keeps every value, with the type the main menu's
+-- snapshot gives it (so a change made in the lobby's full MCM is seen at once);
+-- the snapshot's value when axr_options has none.
+local CFG_TYPE = { boolean = 1, number = 2, string = 0 }
+local function mcm_fallback(id)
+	mcm_cache = mcm_cache or mcm_cache_read()
+	local c = mcm_cache[id]
+	if c == nil then
+		return nil
+	end
+	mcm_cached = mcm_cached + 1
+	local cfg = axr_main and axr_main.config
+	if cfg and cfg.r_value then
+		local ok, v = pcall(cfg.r_value, cfg, "mcm", id, CFG_TYPE[type(c)] or 0, c)
+		if ok and v ~= nil and type(v) == type(c) then
+			return v
+		end
+	end
+	return c
+end
+
+-- ui_mcm.get in a lobby game: MCM's own answer, else the fallback. A path MCM
+-- did not know once is not asked again (each ask logs "!MCM given bad path":
+-- in game 2026-11-16, Stealth asked 7 paths per NPC per frame), until the full
+-- MCM is gathered.
+local function wrap_get(m)
+	if type(m) ~= "table" or type(m.get) ~= "function" or m.__pst_get then
+		return
+	end
+	local orig = m.get
+	m.__pst_get = true
+	m.get = function(id, ...)
+		if type(id) == "string" and mcm_unknown[id] then
+			return mcm_fallback(id)
+		end
+		local v = orig(id, ...)
+		if v == nil and type(id) == "string" then
+			mcm_unknown[id] = true
+			return mcm_fallback(id)
+		end
+		return v
+	end
+end
+
+-- Before the lobby window opens MCM: gathers every page once.
+function mcm_gather_all()
+	if mcm_full or not blocking then
+		return false
+	end
+	local m = rawget(_G, "ui_mcm") or ui_mcm
+	if type(m) ~= "table" or type(m.init_opt_base) ~= "function" then
+		return false
+	end
+	local t0 = os.clock()
+	full_gather = true
+	local ok, err = pcall(m.init_opt_base)
+	full_gather = false
+	gathering = false
+	mcm_full = true
+	mcm_unknown = {}
+	local pages = type(m.options) == "table" and #m.options or 0
+	if ok then
+		log("MCM: every page gathered for the lobby (%d, %.1f s)", pages, os.clock() - t0)
+	else
+		log("! MCM: gathering every page failed: %s", tostring(err))
+	end
+	return ok
+end
+
+local function block_skipped(names)
+	local mt = getmetatable(_G) or {}
+	local old = mt.__index
+	mt.__index = function(t, key)
+		if gathering and type(key) == "string" and names[string.lower(key) .. ".script"] then
+			local b = blocked[key]
+			if not b then
+				b = { n = 0, by = {} }
+				blocked[key] = b
+			end
+			b.n = b.n + 1
+			local ok, by = pcall(caller)
+			if ok and by then
+				b.by[by] = true
+			end
+			return nil
+		end
+		local v
+		if type(old) == "function" then
+			v = old(t, key)
+		elseif type(old) == "table" then
+			v = old[key]
+		else
+			v = rawget(t, key)
+		end
+		if key == "ui_mcm" then
+			pcall(wrap_gather, v)
+			pcall(wrap_get, v)
+		end
+		return v
+	end
+	setmetatable(_G, mt)
+	-- ui_mcm already loaded (it is, when MCM's own scripts ran first)
+	pcall(wrap_gather, rawget(_G, "ui_mcm"))
+	pcall(wrap_get, rawget(_G, "ui_mcm"))
+	blocking = true
+end
+
+local function blocked_report(max)
+	local list = {}
+	for k, b in pairs(blocked) do
+		local by = {}
+		for c in pairs(b.by) do
+			by[#by + 1] = c
+		end
+		table.sort(by)
+		list[#list + 1] = { k, b.n, table.concat(by, ", ") }
+	end
+	table.sort(list, function(a, b) return a[2] > b[2] or (a[2] == b[2] and a[1] < b[1]) end)
+	log("skipped scripts asked for and not loaded: %d", #list)
+	for i = 1, math.min(max, #list) do
+		log("  %3dx %s  (by %s)", list[i][2], list[i][1], list[i][3] ~= "" and list[i][3] or "?")
+	end
+end
+
+-------------------------------------------------------------------------------
+-- A new game from the lobby (in game 2026-11-16: the host's new game started
+-- on fake_start with no faction, new_game_faction and new_game_money empty
+-- at the new game's on_game_start, though the new game screen had written
+-- them, so G.A.M.M.A.'s start script never left fake_start and the clients
+-- had no level to follow). The lobby's StartGame copies the new game
+-- screen's choices (axr_options' character_creation) into a file of its own,
+-- as the markers are, and the next game puts them back before any script
+-- reads them (startup_skip, first in axr_main's on_game_start), when the
+-- faction is missing there.
+
+function carry_path()
+	return app_path(CARRY_FILE)
+end
+
+-- The lobby's StartGame, before the game is left.
+function carry_new_game()
+	local cfg = axr_main and axr_main.config
+	if not cfg then
+		log("! new game: no axr_main.config, nothing carried")
+		return 0
+	end
+	local all = cfg:collect_section("character_creation") or {}
+	local keys, n = {}, 0
+	for k, v in pairs(all) do
+		if type(k) == "string" and k:find("^new_game_") and k ~= "new_game_test" and v ~= nil and v ~= "" then
+			keys[k] = tostring(v)
+			n = n + 1
+		end
+	end
+	master_core_text.write_file(carry_path(), master_core_text.encode({ t = os.time(), keys = keys }))
+	if keys.new_game_faction then
+		log("new game: carrying the new game screen's %d settings (faction %s, start %s, money %s)", n,
+			keys.new_game_faction, tostring(keys.new_game_map), tostring(keys.new_game_money))
+	else
+		log("! new game: the new game screen left no faction in axr_options (%d settings): the new game will stay on fake_start", n)
+	end
+	return n
+end
+
+-- The next game, first thing: puts them back when the faction is missing.
+-- A game (alife) uses the file up; a main menu between the two only fills
+-- the config.
+function carry_back()
+	local text = master_core_text.read_file(carry_path())
+	if not text or text == "" then
+		return false
+	end
+	local t = master_core_text.decode(text)
+	if not (type(t) == "table" and type(t.t) == "number" and os.time() - t.t <= CARRY_FOR and type(t.keys) == "table") then
+		master_core_text.write_file(carry_path(), "")
+		return false
+	end
+	local in_game = alife and alife() ~= nil
+	if in_game then
+		master_core_text.write_file(carry_path(), "")
+	end
+	local cfg = axr_main and axr_main.config
+	if not cfg then
+		return false
+	end
+	local have = cfg:r_value("character_creation", "new_game_faction", 3)
+	if have and have ~= "" then
+		log("new game: axr_options has the faction (%s): nothing put back", tostring(have))
+		return false
+	end
+	local n = 0
+	for k, v in pairs(t.keys) do
+		cfg:w_value("character_creation", k, v)
+		n = n + 1
+	end
+	pcall(function() cfg:save() end)
+	log("new game: the new game screen's %d settings put back (faction %s, start %s)%s", n,
+		tostring(t.keys.new_game_faction), tostring(t.keys.new_game_map), in_game and "" or " (no game yet)")
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- axr_main's two questions
+
+function startup_skip()
+	pcall(carry_back)
+	mark("the scripts start")
+	if not read_marker() then
+		return nil
+	end
+	local ok, names = pcall(function() return persistent_stalkers_skip.names end)
+	if not (ok and type(names) == "table") then
+		log("! a lobby game, but no skip list (tools/build_axr_main.js): every script starts")
+		return nil
+	end
+	skipping = 0
+	for _ in pairs(names) do
+		skipping = skipping + 1
+	end
+	log("a lobby game: %d mod scripts are not started", skipping)
+	local okb, err = pcall(block_skipped, names)
+	if not okb then
+		log("! the skipped scripts could not be blocked from loading: %s", tostring(err))
+	end
+	return names
+end
+
+-- Our axr_main.script, in a lobby game, times each script while it starts
+-- (os.clock, seconds): load, its file run when it is first named (with every
+-- script it names in turn), and start, its on_game_start (with the same).
+function startup_report(load, start)
+	local function top(t, what)
+		local list, total = {}, 0
+		for k, v in pairs(t) do
+			list[#list + 1] = { k, v }
+			total = total + v
+		end
+		table.sort(list, function(a, b) return a[2] > b[2] end)
+		log("startup, %s: %d scripts, %.0f ms; the slowest:", what, #list, total * 1000)
+		for i = 1, math.min(REPORT_TOP, #list) do
+			log("  %6.0f ms  %s", list[i][2] * 1000, list[i][1])
+		end
+	end
+	top(load or {}, "load (the file, and every script it names)")
+	top(start or {}, "on_game_start (and every script it names)")
+	if blocking then
+		blocked_report(REPORT_TOP)
+	end
+	mark("the scripts have started")
+end
+
+-------------------------------------------------------------------------------
+-- Game saves in the lobby: none. itms_manager writes "<name> - autosave" 4 s
+-- after the first update (new_game_equippment), and that same call wears the
+-- starting kit down: removed for the whole lobby game. Every other game save
+-- (quicksave, a named save, the save dialog) is refused at the console and at
+-- the key. The profile file is not a game save: a faction change writes it.
+
+local refused_logged = false
+
+function drop_lobby_autosave()
+	if RemoveTimeEvent then
+		RemoveTimeEvent(0, "delay_new_game_autosave")
+	end
+end
+
+local function is_save_cmd(cmd)
+	return type(cmd) == "string" and cmd:match("^(%S+)") == "save"
+end
+
+local function refuse_save(why)
+	if not refused_logged then
+		refused_logged = true
+		log("the lobby does not write a save (%s)", tostring(why))
+	end
+end
+
+-- Quicksave, the pause menu and a hardsave ask here before they save.
+-- flags.ret stops them. A script that saves on its own hits the console hook.
+function on_before_save(flags)
+	if lobby().lobby_game() and type(flags) == "table" then
+		flags.ret = true
+		refuse_save("quicksave")
+	end
+end
+
+-- Every load, the lobby's or not, starts with one of these console commands
+-- (the main menu: "start server(<save or spawn>/...)"; in a game: "load <save>"):
+-- timed, so a regular load can be put beside the lobby's (user's request,
+-- 2026-11-16). The engine's own exec_console_cmd is called as it was.
+local function hook_console()
+	local orig = rawget(_G, "exec_console_cmd")
+	if type(orig) ~= "function" or rawget(_G, "__pst_timed_cmd") then
+		return
+	end
+	rawset(_G, "__pst_timed_cmd", true)
+	_G.exec_console_cmd = function(cmd, ...)
+		if type(cmd) == "string" and (cmd:find("^start server") or cmd:find("^load ")) then
+			mark("a load starts: " .. cmd)
+			-- a load out of the lobby (the host's save or new game) and a
+			-- client's lobby load: no "press any key", or the client stays
+			-- on that screen and never takes the host's load
+			local joining = join().joining_lobby()
+			if lobby().lobby_game() or joining then
+				pcall(keypress_hold)
+			end
+			if joining and cmd:find("^start server") then
+				pcall(join().write_client_marker)
+			end
+		end
+		if is_save_cmd(cmd) and lobby().lobby_game() then
+			refuse_save(cmd)
+			return
+		end
+		return orig(cmd, ...)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- From the main menu
+
+function has_spawn()
+	local ok, found = pcall(function()
+		return getFS():exist("$game_spawn$", SPAWN .. ".spawn")
+	end)
+	return ok and found and true or false
+end
+
+-- Starts the lobby's new game: no faction, so nothing leaves the place it
+-- starts. mm: the main menu (its StartGame, which xrRazom patches for hosting).
+function enter(mm)
+	if level.present() then
+		log("! enter: only from the main menu")
+		return false
+	end
+	local cfg = axr_main.config
+	for _, k in ipairs({ "new_game_faction", "new_game_map", "new_game_loadout", "new_game_icon" }) do
+		cfg:w_value("character_creation", k)
+	end
+	-- the debug F2 test map's switch (user's request, 2026-11-15): G.A.M.M.A.'s
+	-- sim_board.fill_start_position then fills no squads (the long part of a
+	-- new game's load), turns smart terrain respawns off for that world only
+	-- (ui_debug_launcher.toggle_respawn: the world's m_data), and clears it
+	cfg:w_value("character_creation", "new_game_test", true)
+	cfg:save()
+	pcall(master_core_text.write_file, carry_path(), "")
+	-- no "press any key" for this load, or for the save the host picks next
+	local kp = keypress_hold()
+	local okl, last = pcall(newest_save)
+	if not write_marker({ last = okl and last or nil, kp = kp or nil }) then
+		if kp then
+			pcall(keypress_release)
+		end
+		cfg:w_value("character_creation", "new_game_test")
+		cfg:save()
+		log("! enter: the marker could not be written")
+		return false
+	end
+	local okm, nm = pcall(mcm_snapshot)
+	log("entering: %s MCM settings kept for the lobby's skipped mods", okm and tostring(nm) or ("! none: " .. tostring(nm)))
+	local spawn = has_spawn() and SPAWN or "all"
+	log("entering: a new test-map game from %s.spawn, with no faction, stays where it starts", spawn)
+	mark("entering the lobby")
+	local function start()
+		if mm and mm.StartGame then
+			mm:StartGame()
+		else
+			exec_console_cmd("start server(all/single/alife/new) client(localhost)")
+		end
+	end
+	if spawn == "all" then
+		start()
+		return true
+	end
+	-- the main menu's StartGame (xrRazom's replacement) runs
+	-- "start server(all/...)": for this one call the global is wrapped so the
+	-- server reads the lobby's spawn instead, and every other step of it stays
+	local orig = _G.exec_console_cmd
+	_G.exec_console_cmd = function(cmd, ...)
+		if type(cmd) == "string" then
+			cmd = string.gsub(cmd, "server%(all/", "server(" .. SPAWN .. "/", 1)
+		end
+		return orig(cmd, ...)
+	end
+	local ok, err = pcall(start)
+	_G.exec_console_cmd = orig
+	if not ok then
+		log("! enter: %s", tostring(err))
+		return false
+	end
+	return true
+end
+
+-- At the main menu (persistent_stalkers_menu.attach): a marker still there
+-- means a lobby game never started (it is used up when the lobby starts), so
+-- its test-map switch may still be set and would empty the next real new
+-- game: both are cleared. The player markers come back after a crash.
+function main_menu_check()
+	pcall(join().plates_back)
+	local text = master_core_text.read_file(marker_path())
+	if text and text ~= "" then
+		master_core_text.write_file(marker_path(), "")
+		local ok, t = pcall(master_core_text.decode, text)
+		if ok and type(t) == "table" and t.kp then
+			keypress_back()
+		end
+		local cfg = axr_main.config
+		cfg:w_value("character_creation", "new_game_test")
+		cfg:save()
+		log("a lobby game did not start: its marker and the test-map switch are cleared")
+	end
+end
+
+-- For persistent_stalkers_lobby.status().
+function report()
+	log("callbacks isolated %s, %d failures caught; %d mod scripts not started; %d MCM settings answered from axr_options for pages not gathered; every MCM page gathered: %s",
+		tostring(isolating), iso_failed, skipping, mcm_cached, tostring(mcm_full))
+	for k, n in pairs(iso_seen) do
+		log("  %dx %s", n, k)
+	end
+	if blocking then
+		blocked_report(100)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- When this script is loaded (the first thing a game's Lua does: axr_main
+-- asks startup_skip before any script is started)
+
+pcall(hook_console)
+
+do
+	local m = read_marker()
+	if m then
+		lobby_load = true
+		CLIENT_LOBBY = m.client == true
+		local ok, on, why = pcall(isolate_callbacks)
+		if ok and on then
+			log("a lobby game: every callback is isolated (an error is logged, not fatal)")
+		elseif ok and why == "already" then
+			log("a lobby game: callbacks already isolated")
+		else
+			log("! a lobby game, but the callbacks could not be isolated")
+		end
+	end
+end
