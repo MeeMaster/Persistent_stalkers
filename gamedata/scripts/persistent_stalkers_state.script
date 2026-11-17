@@ -786,6 +786,21 @@ local function apply_faction(comm)
 	log("faction set to %s", comm)
 end
 
+-- The profile's pending edits (the lobby's faction change, { faction,
+-- goodwill }), set on the actor as it is: no items, whatever the carry
+-- checkboxes say (the player asked for them).
+function apply_edits(e)
+	if type(e) ~= "table" or not db.actor then
+		return
+	end
+	if e.goodwill then
+		apply_goodwill(e.goodwill)
+	end
+	if e.faction then
+		apply_faction(e.faction)
+	end
+end
+
 local function apply_stats(c, parts, report)
 	local a = db.actor
 	if parts.money and c.money then
@@ -892,6 +907,9 @@ function apply(c, parts, done)
 	local report = { kept = #keep, released = 0, refused = 0, created = 0, missing = 0, misplaced = 0 }
 	for _, id in ipairs(release) do
 		local se = alife_object(id)
+		-- what other mods keep for it goes with it: a worn Promin's modules
+		-- were ejected into the backpack (Wearable Devices)
+		pcall(master_core_items.drop_id_states, id)
 		local ok, res = pcall(alife_release_id, id)
 		if ok and res ~= false then
 			report.released = report.released + 1
