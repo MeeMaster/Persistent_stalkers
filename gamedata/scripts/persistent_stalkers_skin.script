@@ -15,7 +15,6 @@ function get()
 	return {
 		layout = "ui_persistent_stalkers.xml",
 		backpack = true,
-		bag_stay = true, -- the backpack stays under the list, not beside the column
 		details = false,
 		note = false,
 		what = false,

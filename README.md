@@ -27,7 +27,7 @@ Each profile is one character, stored in `D:\Anomaly\appdata\persistent_stalkers
 
 ## The lobby (experimental)
 
-The lobby is a small scene where you pick your character before a game, and where friends join you before a co-op game. Press **Start the lobby** under the profile list at the main menu. A short game loads at the selected lobby place (Cordon's rookie village unless you choose another): your character stands by the campfire, wearing the selected profile's outfit and weapon, with the camera in front. Other players stand in a row beside you, each with a name plate showing their nickname, profile, faction and class.
+The lobby is a small scene where you pick your character before a game, and where friends join you before a co-op game. Press **Start the lobby** under the profile list at the main menu. A short game loads at one of the lobby's places, picked at random each time (set `random = 0` in `mod_system_persistent_stalkers.ltx` to always use the `place =` one): your character stands by the campfire, wearing the selected profile's outfit and weapon, with the camera in front. Other players stand in a row beside you, each with a name plate showing their nickname, profile, faction and class.
 
 Along the bottom are the main menu's own options: **New game**, **Load game**, **Last save**, **Options**, **MCM**, **Leave the lobby** and **Quit**. Whatever you start or load from here is played with the profile you selected, as from the main menu. **Last save** loads the save that was newest when you entered the lobby.
 

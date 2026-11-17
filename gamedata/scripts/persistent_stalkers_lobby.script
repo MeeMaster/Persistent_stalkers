@@ -180,6 +180,7 @@ end
 -- spacing and the selected place; each [ps_lobby_place_<name>] is a map, the
 -- host's position and rotation, and the cameras relative to them.
 local cams -- the place for this map; false: none; nil: not read yet
+local chosen -- the place this lobby picked (persistent_stalkers_place.pick), kept across its level change
 local place_maps -- the config's places' maps (lobby levels)
 
 local function lobby_maps()
@@ -252,7 +253,7 @@ function load_cams()
 		glide_ms = g * 1000
 	end
 	local here = level.present() and level.name() or nil
-	local pl = here and place().for_map(all, here)
+	local pl = here and place().for_map(all, here, chosen)
 	if not pl then
 		log("no place for %s in the config: the host where the actor stands, free look (persistent_stalkers_place.add(\"name\") makes one)",
 			tostring(here))
@@ -1414,7 +1415,8 @@ local function tell(target)
 		pack[me] = my_card()
 	end
 	master_core_net.send_table("pst_lobby", target, { x = origin.x, y = origin.y, z = origin.z,
-		fx = origin.fx, fz = origin.fz, sp = origin.sp, sd = origin.sd, order = names_now(), cards = pack })
+		fx = origin.fx, fz = origin.fz, sp = origin.sp, sd = origin.sd, order = names_now(), cards = pack,
+		pl = cams and cams.name or nil })
 end
 
 -- A client asks; the host answers when its lobby is on.
@@ -1440,6 +1442,9 @@ local function ev_lobby(args)
 		return
 	end
 	local o = { x = t.x, y = t.y, z = t.z, fx = t.fx, fz = t.fz, sp = tonumber(t.sp), sd = tonumber(t.sd) }
+	if type(t.pl) == "string" and t.pl ~= chosen then
+		chosen, cams = t.pl, nil -- the host's place: this machine's cameras from its section
+	end
 	if not active then
 		asking = nil
 		start(o, t.order)
@@ -1498,7 +1503,7 @@ local function travel_target(m)
 		return nil
 	end
 	local all = place().read()
-	local pl = all and place().place_of(all, place().selected(all))
+	local pl = all and place().place_of(all, chosen)
 	if not pl or pl.map == level.name() then
 		return nil
 	end
@@ -1516,7 +1521,7 @@ local function go_travel(t)
 	if not boot().keep_autosaves() then
 		return false
 	end
-	if not boot().write_marker({ last = t.m.last, kp = t.m.kp, travelled = t.pl.map }) then
+	if not boot().write_marker({ last = t.m.last, kp = t.m.kp, travelled = t.pl.map, place = t.pl.name }) then
 		log("! travel: the marker could not be written: the lobby stays on %s", level.name())
 		pcall(boot().restore_autosaves)
 		return false
@@ -1539,7 +1544,16 @@ local function take_lobby()
 		local m = boot().take_marker()
 		if m and m.travelled then
 			pcall(boot().restore_autosaves) -- the level change's autosave is the lobby's world
+			chosen = type(m.place) == "string" and m.place or nil
+		elseif m then
+			local okp, all = pcall(function() return place().read() end)
+			local okn, name = pcall(function() return okp and all and place().pick(all) or nil end)
+			chosen = okn and name or nil
+			if okp and all and place().random_on(all) then
+				log("random place: %s", tostring(chosen))
+			end
 		end
+		cams = nil
 		local okt, t = pcall(travel_target, m or { travelled = true })
 		if not okt then
 			log("! travel: %s: the lobby stays on %s", tostring(t), level.name())

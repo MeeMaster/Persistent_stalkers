@@ -183,13 +183,8 @@ function selected(all)
 	return sec and sec.place ~= "" and sec.place or nil
 end
 
--- The place for this map: the selected one when it is on this map, else the
--- first on this map (by name). Nil when none is.
-function for_map(all, map)
-	local p = place_of(all, selected(all))
-	if p and p.map == map then
-		return p
-	end
+-- Every place's name, sorted.
+local function names_of(all)
 	local names = {}
 	for sec in pairs(all or {}) do
 		local n = sec:match("^" .. PREFIX .. "(.+)$")
@@ -198,7 +193,48 @@ function for_map(all, map)
 		end
 	end
 	table.sort(names)
-	for _, n in ipairs(names) do
+	return names
+end
+
+-- [persistent_stalkers_lobby] random = 1: each lobby picks a place at random.
+function random_on(all)
+	local sec = all and all[SECTION]
+	return sec and tonumber(sec.random) == 1 or false
+end
+
+-- The place this lobby goes to: with random on, one of the usable places
+-- (not on fake_start), else the selected one. Nil when there is none.
+function pick(all)
+	if random_on(all) then
+		local ok = {}
+		for _, n in ipairs(names_of(all)) do
+			local q = place_of(all, n)
+			if q and q.map ~= "fake_start" then
+				ok[#ok + 1] = n
+			end
+		end
+		if #ok > 0 then
+			-- math.random starts with the same seed in every fresh Lua: mix in the clock
+			local i = (os.time() + math.floor(os.clock() * 1000) + math.random(1000)) % #ok + 1
+			return ok[i]
+		end
+	end
+	return selected(all)
+end
+
+-- The place for this map: want (the one this lobby picked) or else the
+-- selected one, when it is on this map; else the first on this map (by name).
+-- Nil when none is.
+function for_map(all, map, want)
+	local p = want and place_of(all, want)
+	if p and p.map == map then
+		return p
+	end
+	p = place_of(all, selected(all))
+	if p and p.map == map then
+		return p
+	end
+	for _, n in ipairs(names_of(all)) do
 		local q = place_of(all, n)
 		if q and q.map == map then
 			return q

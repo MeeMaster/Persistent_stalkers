@@ -10,6 +10,8 @@
 ;              the spawn starts on, the lobby changes level to it first (no
 ;              rebuild of the spawn). On a map with no place, the host stands
 ;              where the actor starts and the camera is free look.
+;   random     1: each lobby picks one of the places below at random (not one
+;              on fake_start), and place is ignored; 0: always place
 ;   spacing    m between slots, for a place with no spacing of its own. The
 ;              host's slot is the first; the other four follow it to the host's
 ;              left (the camera's right).
@@ -47,6 +49,7 @@ lim_zoom = 0.4, 6.6
 
 [persistent_stalkers_lobby]
 place = radar
+random = 1
 spacing = 1.2
 side = 1
 face = 0

@@ -38,9 +38,15 @@ io.open = function(path, mode)
 	local buf = {}
 	return { write = function(_, s) buf[#buf + 1] = s; return true end, close = function() FILES[path] = table.concat(buf) end }
 end
+-- the textures installed (G.A.M.M.A.'s main menu ones; base Anomaly has none of these but the badges)
+TEXTURES = { ["ui\\ui_background_new.ogm"] = true, ["GAMMAMainMenuLogo.dds"] = true, ["ui\\moty2018.dds"] = true,
+	["ui\\moty2019.dds"] = true, ["LogoAMCM.dds"] = true, ["LogoGAMMA.dds"] = true }
 function getFS() return {
 	update_path = function(_, _, f) return "app/" .. f end,
-	exist = function(_, alias, f) return alias == "$game_spawn$" and f == "ps_lobby.spawn" and SPAWN_PRESENT or nil end,
+	exist = function(_, alias, f)
+		if alias == "$game_textures$" then return TEXTURES[f] or nil end
+		return alias == "$game_spawn$" and f == "ps_lobby.spawn" and SPAWN_PRESENT or nil
+	end,
 	-- the save list (the lobby's Last save): newest first
 	file_list_open_ex = function()
 		return {
@@ -341,7 +347,18 @@ end
 local mm = MM.main_menu()
 check(mm.pst_panel ~= nil, "the panel is attached")
 check(XML_NODES["options"] ~= nil and XML_NODES["menu_box"] == nil, "the options are moved, with no box around them")
-check(XML_FROM["background"] == "ui_persistent_stalkers.xml", "default skin: our background")
+check(XML_FROM["background"] == "ui_persistent_stalkers.xml" and XML_NODES["logo_main"] ~= nil and XML_NODES["logo_4"] ~= nil,
+	"default skin: our background, with G.A.M.M.A.'s logo and badges")
+do -- base Anomaly: no G.A.M.M.A. background, logo or badge
+	local had = TEXTURES
+	TEXTURES = { ["ui\\moty2018.dds"] = true, ["ui\\moty2019.dds"] = true, ["LogoAMCM.dds"] = true }
+	XML_NODES["logo_main"], XML_NODES["logo_4"] = nil, nil
+	MM.main_menu()
+	check(XML_FROM["background"] == "ui_mm_main.xml" and XML_NODES["logo_main"] == nil and XML_NODES["logo_4"] == nil,
+		"without G.A.M.M.A.'s textures: the game's own background, no grey logo boxes")
+	TEXTURES = had
+	MM.main_menu()
+end
 check(mm.pst_panel.skin.name == "default" and mm.pst_panel.equip ~= nil and mm.pst_panel.bag ~= nil
 	and mm.pst_panel.details == nil and mm.pst_panel.what == nil and #mm.pst_panel.rows == 8
 	and mm.pst_panel.btn_new.tc.text == "New",
@@ -1267,6 +1284,30 @@ end_game()
 FILES[marker] = master_core_text.encode({ t = os.time() })
 start_game()
 check(TRAVEL == nil and LOBBY.is_active(), "the place on the map the spawn starts on: no level change, the lobby starts")
+LOBBY.stop()
+-- random = 1: a place picked at random, never one on fake_start
+local function rnd_ltx(sel)
+	local NL = string.char(13, 10)
+	local t = cam_ltx({ name = sel, map = "l05_bar", pos = "100, 0, 50", rot = "90" }):gsub("place = " .. sel, "place = " .. sel .. NL .. "random = 1")
+	return t .. table.concat({ "", "[ps_lobby_place_far]", "map = l01_escape", "host_position = 100, 0, 50", "host_rotation = 0",
+		"", "[ps_lobby_place_fs]", "map = fake_start", "host_position = 0, 0, 0", "host_rotation = 0", "" }, NL)
+end
+FILES[cam_file] = rnd_ltx("bar")
+local PL = persistent_stalkers_place
+local seen = {}
+for i = 1, 60 do seen[PL.pick(PL.read()) or "nil"] = true end
+check(PL.random_on(PL.read()) and seen.bar and seen.far and not seen.fs and not seen["nil"],
+	"random = 1: the pick takes both usable places and never the one on fake_start")
+FILES[cam_file] = FILES[cam_file]:gsub("random = 1", "random = 0")
+check(not PL.random_on(PL.read()) and PL.pick(PL.read()) == "bar", "random = 0: the selected place")
+-- a travelled marker names the place picked before the level change: it wins over the selected one on that map
+end_game()
+FILES[cam_file] = rnd_ltx("bar") .. table.concat({ "", "[ps_lobby_place_duty]", "map = l05_bar", "host_position = 200, 0, 80", "host_rotation = 0", "" }, string.char(13, 10))
+FILES[marker] = master_core_text.encode({ t = os.time(), travelled = "l05_bar", place = "duty" })
+start_game()
+for i = 1, 10 do NOW = NOW + 100; fire("actor_on_update") end
+check(TRAVEL == nil and LOBBY.is_active() and near(ACTOR_POS, 200, 0, 80),
+	"after the level change the lobby stands on the place it picked (duty), not the selected one on the same map (bar)")
 LOBBY.stop()
 end_game()
 game_graph, ChangeLevel, VEC_ZERO = nil, nil, nil

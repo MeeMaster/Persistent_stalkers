@@ -82,7 +82,9 @@ The lobby uses the new pose on the next update. The file is `gamedata\configs\mo
 |---|---|
 | `run_string persistent_stalkers_place.here()` | Logs the map, your position and the way you face, and a ready place line with you as the host. |
 | `run_string persistent_stalkers_place.add("name")` | Writes a place where you stand, facing where the camera should be, copies the selected place's cameras, and selects it. |
-| `run_string persistent_stalkers_place.choose("name")` | Selects a place from the config (the same as editing `place =` in `[persistent_stalkers_lobby]`). The next lobby goes there. |
+| `run_string persistent_stalkers_place.choose("name")` | Selects a place from the config (the same as editing `place =` in `[persistent_stalkers_lobby]`). The next lobby goes there, unless `random = 1`. |
+
+With `random = 1` in `[persistent_stalkers_lobby]` (the default), each lobby picks one of the places at random (never one on `fake_start`) and logs `random place: <name>`; `place =` is then ignored. Set `random = 0` to always use `place =`, which you need when recording cameras or hand tuning a particular place.
 
 One spawn serves every place. A place on another map than the spawn's start takes a level change before the lobby starts (the log says `place <name> is on <map>: changing level`), so it loads a bit longer. The engine saves `<name> - autosave` for every level change; the lobby sets your autosave aside first and puts it back on arrival (log: `the autosave set aside for the level change`, then `the level change's autosave: the lobby's deleted (…), yours back (…)`). `tools/build_lobby_spawn.sh` is needed only after a modpack update changes `all.spawn`; build it for the place you use most to skip that second load.
 
